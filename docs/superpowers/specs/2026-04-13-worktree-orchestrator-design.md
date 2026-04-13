@@ -312,7 +312,15 @@ frontend/
     ws.ts, App.tsx
   vite.config.ts
 
-skills/           # agent skills files (see §11)
+skills/                  # agent system prompts — loaded at spawn time by ContextManager
+  mastermind.md          # top-level orchestrator: decompose, delegate, monitor, steer
+  lead.md                # section lead: coordinate team, retry logic, merge decision
+  pm-agent.md            # planning: decompose section task into worker prompts
+  implementer.md         # base implementer template (Codex-specific prefix in codex-cli.ts)
+  reviewer.md            # code review: compare diffs, pick winner, explain reasoning
+  security.md            # security scan: identify issues, classify severity
+  patch-worker.md        # targeted fix: minimal change to resolve a specific security finding
+
 docs/
   superpowers/specs/  # this file and future specs
 ```
