@@ -3,9 +3,9 @@
 
 ## 1. Overview
 
-A general-purpose agentic orchestration system. A single **Mastermind** agent decomposes a user goal into sections, delegates each section to a **Lead team**, and monitors progress. Each Lead team runs a full mini-team of agents — PM, Implementers, Reviewer, Security — each Implementer operating in its own git worktree. The user interacts only with the Mastermind (via CLI or dashboard) and can steer, approve, or redirect mid-flight.
+A general-purpose agentic orchestration system. A single **Mastermind** agent decomposes a user goal into sections, delegates each section to a **Lead team**, and monitors progress. Each Lead team runs PM, Implementers, and a Reviewer — each Implementer operating in its own git worktree. The user interacts via a web dashboard and can steer, approve, or redirect mid-flight.
 
-Built for the hackathon on TypeScript + Codex CLI, but agent-agnostic by design.
+**Hackathon MVP scope:** web dashboard only, Codex CLI adapter only, no Security/Patch Worker agents. Post-MVP extensions (multi-adapter, Security agent, CLI parity, Redis degrade mode) are noted where relevant but not specced here.
 
 ---
 
@@ -28,11 +28,13 @@ Built for the hackathon on TypeScript + Codex CLI, but agent-agnostic by design.
 ```
 Mastermind
 └── SectionLead (one per section, e.g. "bass", "drums", "melody")
-    ├── PM Agent          (read-only, produces sub-tasks + worker prompts)
-    ├── Implementer ×N    (each owns a git worktree, runs WorkerAgent)
-    ├── Reviewer          (read-only, picks best implementation)
-    └── Security Agent    (read-only, can spawn a Patch Worker if critical issue found)
-        └── Patch Worker? (optional, owns its own worktree)
+    ├── PM Agent        (read-only, produces sub-tasks + worker prompts)
+    ├── Implementer ×N  (each owns a git worktree, runs WorkerAgent)
+    └── Reviewer        (read-only, picks best implementation, explains reasoning)
+
+-- post-MVP --
+    └── Security Agent  (read-only, can spawn a Patch Worker if critical issue found)
+        └── Patch Worker (optional, owns its own worktree)
 ```
 
 ### Mastermind states
@@ -84,14 +86,23 @@ Initial set — exact schema evolves during implementation, categories are fixed
 ### 4.3 outbox (pending side effects)
 ```sql
 CREATE TABLE outbox (
-  id          INTEGER PRIMARY KEY,
-  effect_type TEXT    NOT NULL,  -- redis_publish|agent_spawn|preview_launch|merge_job
-  payload     JSON    NOT NULL,
-  status      TEXT    NOT NULL DEFAULT 'pending',  -- pending|processing|done|failed
-  created_at  INTEGER NOT NULL,
+  id           INTEGER PRIMARY KEY,
+  effect_key   TEXT    NOT NULL UNIQUE,  -- stable deterministic key, deduplicates replays
+  effect_type  TEXT    NOT NULL,  -- redis_publish|agent_spawn|preview_launch|merge_job
+  payload      JSON    NOT NULL,
+  status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|processing|done|failed
+  created_at   INTEGER NOT NULL,
   processed_at INTEGER
 );
 ```
+
+**Idempotency keys per effect type:**
+- `agent_spawn` → `spawn-{entity_id}` (one spawn per entity, ever)
+- `preview_launch` → `preview-{worktree_id}` (one preview server per worktree)
+- `merge_job` → `merge-{lead_id}-{winner_worker_id}` (one merge per lead winner)
+- `redis_publish` → `pub-{entity_id}-{sequence}` (duplicate publishes are safe; Redis consumers are idempotent)
+
+All effect handlers must check "already running / already done" before acting. The `effect_key UNIQUE` constraint makes inserting a duplicate a no-op at the DB level.
 
 All writes to `event_log` + relevant projection + `outbox` (if needed) happen in a **single SQLite transaction**.
 
@@ -107,7 +118,7 @@ All writes to `event_log` + relevant projection + `outbox` (if needed) happen in
 
 **Redis channels exist only for Leads, not Workers.** Lead↔Worker coordination uses in-process async queues (no Redis). Internal module calls within a Lead are direct function calls. Mastermind subscribes to all `lead:*:events` channels.
 
-Redis is always rebuilt from SQLite on startup. If Redis is unavailable on boot, startup fails fast with a clear error.
+Redis is always rebuilt from SQLite on startup. **Redis is a required dependency for the hackathon MVP** — if unavailable on boot, startup fails fast with a clear error. This is acceptable in dev (Redis always available locally). Post-MVP: degrade mode (orchestration continues locally, dashboard live updates disabled) is a planned extension but not specced here.
 
 ---
 
@@ -128,11 +139,15 @@ Covers the gap between "SQLite write" and "side effect happens". On crash, any `
 2. Connect Redis, verify reachable
 3. Load all entities from projections → reconstruct dependency tree in memory
 4. Classify each entity: `done/failed` → skip | `running/retrying` → resume | `pending` → check if parent is ready
-5. Reconcile worktrees: run `git worktree list`, cross-reference against `worktrees` projection
-   - Worktree exists + branch has commits → emit `WorkerDone` (Codex finished, event was lost)
-   - Worktree exists + uncommitted changes → re-spawn agent to continue
-   - Worktree exists + empty → re-spawn agent from scratch
-   - Worktree missing → re-create, re-spawn agent from scratch
+5. Reconcile worktrees: run `git worktree list`, cross-reference against `worktrees` projection.
+   Recovery reads the **completion marker** (`.orc-done.json` in the worktree root, written by the runner on clean exit) — not git history — to determine terminal state:
+   - Marker exists + `status: done` → emit `WorkerDone`, mark complete
+   - Marker exists + `status: failed` → treat as `WorkerFailed`, apply retry logic
+   - No marker + uncommitted changes → Codex was mid-run, re-spawn in the same worktree to continue
+   - No marker + worktree clean → never started or was reset, re-spawn from scratch
+   - Worktree missing → re-create branch + worktree, re-spawn from scratch
+
+   **Why not "has commits":** a branch can have commits and still be incomplete, wrong, or semantically failed. The marker is the only reliable terminal signal from the runner.
 6. Drain outbox: replay all `pending` entries before anything else proceeds
 7. Repopulate Redis from projections
 8. Start dashboard server + WebSocket
@@ -173,9 +188,9 @@ interface WorkerResult {
 }
 ```
 
-**First implementation:** `CodexCLIAdapter` — spawns `codex` as a child process in `ctx.worktreePath`, streams stdout to `WorkerProgress` events, reads git diff on exit.
+**MVP implementation:** `CodexCLIAdapter` — spawns `codex` as a child process in `ctx.worktreePath`, streams stdout to `WorkerProgress` events. On clean exit, writes `.orc-done.json` to the worktree root (`{ status, exitCode, ts }`), then reads git diff for the result.
 
-**Future adapters:** `ClaudeCodeAdapter`, `OpenCodeAdapter` — same interface, drop-in swap.
+**Post-MVP adapters:** `ClaudeCodeAdapter`, `OpenCodeAdapter` — same interface, drop-in swap.
 
 ---
 
@@ -184,7 +199,9 @@ interface WorkerResult {
 ### Retry levels
 
 **Level 1 — Worker (automatic):**
-`WorkerFailed` → `retry_count < maxRetries` → re-spawn same worktree with full error history appended to prompt. On exhaustion → emit `WorkerExhausted` → escalate to Lead.
+`WorkerFailed` → `retry_count < maxRetries` → spawn a **new worker entity + fresh worktree** (e.g. `bass-v1-r2`), with `retry_of: worker_id` lineage stored in `task_edges`. The failed worktree is preserved for inspection but not reused. Full error history from prior attempts is passed in the new prompt. On exhaustion → emit `WorkerExhausted` → escalate to Lead.
+
+**Why fresh worktree per retry:** reusing a failed worktree preserves broken local state and makes attempts hard to compare. Each retry is a clean, isolated run with traceable lineage.
 
 **Level 2 — Lead (strategic):**
 On `WorkerExhausted` → LLM picks a new strategy based on all prior errors → spawn fresh worker with new strategy hint. If all strategies exhausted → emit `LeadFailed` → escalate to Mastermind.
@@ -232,13 +249,13 @@ Each agent has a `skills/<agent>.md` file defining its system prompt, tools, and
 
 ```
 skills/
-├── mastermind.md
-├── lead.md
-├── pm-agent.md
-├── implementer.md       # base template — Codex-specific override in agents/codex-cli.ts
-├── reviewer.md
-├── security.md
-└── patch-worker.md
+├── mastermind.md    # MVP
+├── lead.md          # MVP
+├── pm-agent.md      # MVP
+├── implementer.md   # MVP — base template, Codex-specific prefix in agents/codex-cli.ts
+├── reviewer.md      # MVP
+├── security.md      # post-MVP
+└── patch-worker.md  # post-MVP
 ```
 
 ### Skills file format (each file)
@@ -275,9 +292,9 @@ Hard rules the agent must follow regardless of instructions.
 
 ---
 
-## 12. Web Dashboard
+## 12. Web Dashboard (primary UI for MVP)
 
-Three-panel layout served by Express + WebSocket on a configurable port (default `4000`).
+Three-panel layout served by Express + WebSocket on a configurable port (default `4000`). The dashboard is the primary — and for the hackathon, only — user interface. CLI covers `orc run` and `orc resume`; all visibility, steering, and approval flows through the dashboard.
 
 **Left panel:** Orchestration tree (Mastermind → Leads → Workers) with live status badges. Expandable per lead. Launch preview button per worker.
 
@@ -347,7 +364,9 @@ orc dashboard                      # open dashboard in browser
 
 1. **Single Node.js process** — Mastermind, Leads, Workers are async coroutines. Only `CodexCLIAdapter` spawns external processes. Makes recovery simple.
 2. **SQLite is always authoritative** — Redis is never the source of truth. If Redis goes down and comes back, it is rebuilt.
-3. **Transactional outbox** — journal + projection + outbox in one SQLite transaction. Crash between write and side effect? Outbox replays it.
-4. **Hierarchical delegation with strategic retry** — Workers retry with error history. Leads escalate with strategy change. Mastermind has final say.
-5. **Agent-agnostic runner** — `WorkerAgent` interface is the only contract. Codex CLI is the first adapter; Claude Code, OpenCode etc. slot in without touching the orchestrator.
-6. **Skills files are first-class** — every agent's behavior is defined in a `skills/*.md` file, not hardcoded in the orchestrator. Swap prompts without touching orchestration logic.
+3. **Transactional outbox with idempotency keys** — journal + projection + outbox in one SQLite transaction. `effect_key UNIQUE` prevents duplicate side effects on replay. All handlers are idempotent.
+4. **Completion marker, not git heuristics** — the runner writes `.orc-done.json` on exit. Recovery reads the marker, never infers state from commit history alone.
+5. **Fresh worktree per retry** — each retry is a new worker + new worktree with `retry_of` lineage. Clean isolation, comparable attempts, no state bleed.
+6. **Redis required for MVP, degrade mode post-MVP** — explicit dependency, not a surprise. Dashboard and live coordination require Redis; local-only degrade mode is a post-hackathon extension.
+7. **Agent-agnostic runner** — `WorkerAgent` interface is the only contract. Codex CLI is the MVP adapter.
+8. **Skills files are first-class** — every agent's behavior is defined in a `skills/*.md` file. Swap prompts without touching orchestration logic.
