@@ -496,6 +496,10 @@ templates/
 
 The `--template` flag overrides auto-detection: `orc run "lo-fi track" --template strudel-track`.
 
+---
+
+## 15. Key Design Decisions
+
 1. **Single Node.js process** — all coordination is in-process for MVP. Redis added for live dashboard.
 2. **SQLite is always authoritative** — Redis rebuilt from SQLite on boot.
 3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
