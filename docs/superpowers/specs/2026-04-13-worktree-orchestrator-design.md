@@ -12,15 +12,17 @@ SQLite event_log + projections              Outbox processor
 Git worktree manager                        Full crash recovery (§7)
 CodexCLIAdapter (codex subprocess)          Security agent + patch worker
 Mastermind decomposition (LLM call)         Strategic retry (Level 2+3)
-maxConcurrentWorkers concurrency cap        Dashboard (React + WebSocket)
-Worker health taxonomy (§3)                 User steering mid-flight
-Workflow templates / task recipes (§16)     Preview launcher (port allocation)
-strudel-track.toml as first template        Cross-lead context sharing
-Session event log per run (§8)              Changelog generation
-Lead → spawn N workers in parallel          Watchdog / health monitoring
-Basic CLI: orc run, orc status              Literal agent-to-agent session talk
-Reviewer (pick best diff, explain why)      Outbox idempotency / degrade mode
+maxConcurrentWorkers concurrency cap        Preview launcher (port allocation)
+Worker health taxonomy (§3)                 Cross-lead context sharing
+Workflow templates / task recipes (§16)     Changelog generation
+strudel-track.toml as first template        Watchdog / health monitoring loop
+Session event log per run (§8)              Literal agent-to-agent session talk
+Lead → spawn N workers in parallel          Outbox idempotency / degrade mode
+Basic CLI: orc run, orc status
+Reviewer (pick best diff, explain why)
 Merge winning worktree → main
+Web dashboard — live tree, event stream     (basic steering in dashboard)
+Approve / compare / drop worktrees in UI
 ```
 
 **Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → reviewer picks the best output → winning branch merges to main. That is a complete, winning demo.
@@ -44,7 +46,7 @@ Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 | `event_log` | SQLite (append-only) | Durable truth — what happened | MVP |
 | `projections` | SQLite (mutable tables) | Current read state — what is | MVP |
 | `outbox` | SQLite (pending queue) | Pending cross-boundary side effects | nice-to-have |
-| Live coordination | Redis Streams | What's happening now (rebuildable) | nice-to-have |
+| Live coordination | Redis Streams | What's happening now (rebuildable) | MVP (required by dashboard) |
 | Code truth | git worktrees | What was built | MVP |
 
 **The one invariant (MVP):** every state transition writes to `event_log` and updates the relevant projection in a single SQLite transaction.
@@ -145,7 +147,7 @@ All handlers check "already running / already done" before acting.
 
 ---
 
-## 5. Redis Coordination [nice-to-have]
+## 5. Redis Coordination [MVP — required by dashboard]
 
 When Redis is added (post-MVP), use **Redis Streams** — not pub/sub — for all `lead:*` channels. Redis Streams are durable: messages persist until consumed and acknowledged, and consumers reconnect with their last-read cursor. This is what makes the boot order safe.
 
@@ -342,11 +344,25 @@ skills/
 
 ---
 
-## 12. Web Dashboard [nice-to-have]
+## 12. Web Dashboard [MVP — primary human interface]
 
-Three-panel layout: orchestration tree (left) · selected entity detail with comparison + actions (center) · live event stream (right). Top bar: global status + steering input.
+The dashboard is the primary user interface and a core part of the MVP. It is how the user watches parallel workers run, compares variations, approves the winner, and steers mid-flight. Without it, there is no human in the loop — just a CLI that runs to completion.
 
-Frontend: Vite + React. Express + WebSocket on port 4000. Requires Redis.
+Three-panel layout served by Express + WebSocket on port 4000 (default):
+
+**Left panel [MVP]:** Orchestration tree — Mastermind → Leads → Workers. Live status badges using the health taxonomy (queued / running / stalled / zombie / done / failed). Expandable per lead.
+
+**Center panel [MVP]:** Selected entity detail.
+- For a Lead: reviewer verdict, side-by-side diff comparison of worker variations, **Approve / Drop / Spawn another** action buttons.
+- For a Worker: agent output log, health status, retry/abort controls.
+
+**Right panel [MVP]:** Live event stream from `orchestration:broadcast` Redis channel via WebSocket. Shows what every entity is doing in real time.
+
+**Top bar [MVP]:** Global orchestration status + natural language steering input (routes to Mastermind).
+
+**Preview launcher:** one-click launch of a worktree's app on localhost — [nice-to-have, requires port allocation logic].
+
+Frontend: Vite + React. WebSocket client subscribes to dashboard server, which subscribes to Redis broadcast. This is why Redis moves to MVP alongside the dashboard.
 
 ---
 
@@ -360,12 +376,12 @@ src/
   orchestrator/   # mastermind.ts, lead.ts, worker.ts, context.ts
                   # recovery.ts (nice-to-have)
   agents/         # types.ts (WorkerAgent interface), codex-cli.ts, mock.ts
-  redis/          # client.ts, streams.ts, broadcast.ts  (nice-to-have)
+  redis/          # client.ts, streams.ts, broadcast.ts  [MVP — dashboard requires it]
   git/            # worktree.ts, reconcile.ts
-  dashboard/      # server.ts, routes.ts, ws.ts  (nice-to-have)
+  dashboard/      # server.ts, routes.ts, ws.ts           [MVP]
   cli.ts          # entry point: orc run, orc status, orc resume
 
-frontend/         # nice-to-have
+frontend/                                                  [MVP]
   src/components/ # TreePanel, DetailPanel, EventStream
   vite.config.ts
 
