@@ -12,17 +12,18 @@ SQLite event_log + projections              Outbox processor
 Git worktree manager                        Full crash recovery (§7)
 CodexCLIAdapter (codex subprocess)          Security agent + patch worker
 Mastermind decomposition (LLM call)         Strategic retry (Level 2+3)
-maxConcurrentWorkers concurrency cap        Preview launcher (port allocation)
-Worker health taxonomy (§3)                 Cross-lead context sharing
-Workflow templates / task recipes (§16)     Changelog generation
-strudel-track.toml as first template        Watchdog / health monitoring loop
-Session event log per run (§8)              Literal agent-to-agent session talk
-Lead → spawn N workers in parallel          Outbox idempotency / degrade mode
+maxConcurrentWorkers concurrency cap        Cross-lead context sharing
+Worker health taxonomy + watchdog (§17)     Changelog generation
+Workflow templates / task recipes (§16)     Literal agent-to-agent session talk
+strudel-track.toml as first template        Outbox idempotency / degrade mode
+Session event log per run (§8)
+Lead → spawn N workers in parallel
 Basic CLI: orc run, orc status
 Reviewer (pick best diff, explain why)
-Merge winning worktree → main
-Web dashboard — live tree, event stream     (basic steering in dashboard)
-Approve / compare / drop worktrees in UI
+Merge coordinator — serialized (§18)
+Preview launcher — one-click per worktree
+Web dashboard — live tree, event stream
+Approve / compare / drop / preview in UI
 ```
 
 **Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → reviewer picks the best output → winning branch merges to main. That is a complete, winning demo.
@@ -120,7 +121,7 @@ Categories are fixed; exact column set evolves during implementation:
 - **worktrees** — worker_id, path, branch, base_branch, git_status, diff_summary
 - **merge_candidates** — lead_id, winner_worker_id, target_branch, reviewer_reasoning
 - **task_edges** *(likely extra)* — parent_id, child_id, dependency type, `retry_of`
-- **previews** *(nice-to-have)* — worktree_id, port, url, status, launched_at
+- **previews** — worktree_id, port, url, status, launched_at  *(MVP — required by preview launcher)*
 - **agent_sessions** *(likely extra)* — entity_id, adapter, pid, status
 
 ### 4.3 outbox (pending side effects) [nice-to-have]
@@ -360,7 +361,7 @@ Three-panel layout served by Express + WebSocket on port 4000 (default):
 
 **Top bar [MVP]:** Global orchestration status + natural language steering input (routes to Mastermind).
 
-**Preview launcher:** one-click launch of a worktree's app on localhost — [nice-to-have, requires port allocation logic].
+**Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Each worktree gets a port from a pool (tracked in the `previews` projection). For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
 
 Frontend: Vite + React. WebSocket client subscribes to dashboard server, which subscribes to Redis broadcast. This is why Redis moves to MVP alongside the dashboard.
 
@@ -507,3 +508,84 @@ The `--template` flag overrides auto-detection: `orc run "lo-fi track" --templat
 10. **Health taxonomy over raw running/failed** — `queued|running|stalled|zombie|done|failed` gives watchdog and dashboard real signal. Taxonomy is MVP; full watchdog loop is post-MVP.
 11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
 12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
+13. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool tracked in `previews` projection.
+14. **Merge coordinator is serialized** — merges never run concurrently. One queue, one merge at a time, with a defined state flow and conflict escalation path. Not just "merge winning worktree → main".
+
+---
+
+## 17. Watchdog [MVP — taxonomy + basic loop] {#s17}
+
+The watchdog is a background loop that monitors all workers in `running` or `spawning` state and derives their health from three inputs. It runs every 5 seconds.
+
+### Polling inputs (per worker)
+
+| Input | How | Signal |
+|---|---|---|
+| stdout inactivity | time since last `WorkerProgress` event in SQLite | `stalled` if > threshold (default 60s) |
+| process liveness | `kill -0 <pid>` on the pid in `runs` projection | `zombie` if process dead + no `.orc-done.json` |
+| completion marker | read `.orc-done.json` from worktree path | `done` or `failed` if marker present |
+
+### Emitted events
+
+- `WorkerHealthy` — re-emitted every poll cycle while worker is `running` + active (heartbeat)
+- `WorkerStalled` — first time inactivity threshold exceeded; state transitions to `stalled`
+- `WorkerZombie` — process dead, no marker; state transitions to `zombie`
+- `WorkerRecovered` — worker was `stalled` but stdout resumed; transitions back to `running`
+
+### Actions on health events
+
+- **Stalled:** Lead is notified via in-process queue. Lead waits one more poll cycle, then emits `Abort` + schedules retry.
+- **Zombie:** treated as `WorkerFailed` with `retryable: true`. Retry logic in §9 applies.
+- **Healthy / Recovered:** no action, state updated in `tasks` projection.
+
+The watchdog does **not** make retry decisions — it observes and emits. The Lead owns the retry decision.
+
+---
+
+## 18. Merge Coordinator [MVP] {#s18}
+
+Merges are never run concurrently. All merge requests flow through a single serialized coordinator to prevent git conflicts between simultaneous lead merges.
+
+### Merge flow
+
+```
+Lead reviewer completes → Lead emits MergeRequest
+        ↓
+MergeCoordinator receives request → appends to merge_queue (SQLite)
+        ↓
+Coordinator processes queue one at a time:
+  1. fetch latest main
+  2. git merge feat/<section> --no-ff
+  3a. clean merge → emit MergeComplete, update merge_candidates projection
+  3b. conflict → emit MergeConflict → escalate to user (dashboard prompt)
+        ↓
+User resolves conflict in dashboard → emit ConflictResolved → coordinator retries merge
+        ↓
+All LeadDone + all merges complete → Mastermind emits OrchestrationComplete
+```
+
+### merge_queue projection
+
+```sql
+CREATE TABLE merge_queue (
+  id           INTEGER PRIMARY KEY,
+  lead_id      TEXT    NOT NULL,
+  winner_worktree_id TEXT NOT NULL,
+  target_branch TEXT   NOT NULL DEFAULT 'main',
+  status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|merging|done|conflict|failed
+  conflict_details JSON,
+  created_at   INTEGER NOT NULL,
+  merged_at    INTEGER
+);
+```
+
+### State machine
+
+`pending → merging → done | conflict → (user resolves) → retrying → done | failed`
+
+### Key rules
+
+- Only one merge runs at a time (in-process mutex or SQLite `status='merging'` as lock).
+- Merge order follows `merge_queue` insertion order (FIFO by `created_at`).
+- On conflict: coordinator pauses queue, surfaces conflict diff to dashboard, waits for user resolution. Other pending merges stay in queue.
+- On merge failure (non-conflict git error): mark `failed`, notify Mastermind, continue queue.
