@@ -12,12 +12,15 @@ SQLite event_log + projections              Outbox processor
 Git worktree manager                        Full crash recovery (§7)
 CodexCLIAdapter (codex subprocess)          Security agent + patch worker
 Mastermind decomposition (LLM call)         Strategic retry (Level 2+3)
-Lead → spawn N workers in parallel          Dashboard (React + WebSocket)
-Worker monitoring (JSONL/stdout stream)     User steering mid-flight
-Basic CLI: orc run, orc status              Preview launcher (port allocation)
-Reviewer (pick best diff, explain why)      Cross-lead context sharing
-Merge winning worktree → main               Changelog generation
-                                            Outbox idempotency / degrade mode
+maxConcurrentWorkers concurrency cap        Dashboard (React + WebSocket)
+Worker health taxonomy (§3)                 User steering mid-flight
+Workflow templates / task recipes (§16)     Preview launcher (port allocation)
+strudel-track.toml as first template        Cross-lead context sharing
+Session event log per run (§8)              Changelog generation
+Lead → spawn N workers in parallel          Watchdog / health monitoring
+Basic CLI: orc run, orc status              Literal agent-to-agent session talk
+Reviewer (pick best diff, explain why)      Outbox idempotency / degrade mode
+Merge winning worktree → main
 ```
 
 **Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → reviewer picks the best output → winning branch merges to main. That is a complete, winning demo.
@@ -71,7 +74,16 @@ Mastermind
 `idle → planning → running → reviewing → merging → done | failed | escalated`
 
 ### Implementer/Worker states [MVP]
-`pending → spawning → running → done | failed | retrying | cancelled`
+`queued → spawning → running → stalled | zombie → done | failed | retrying | cancelled`
+
+**Health taxonomy [MVP]:**
+- `queued` — waiting for a concurrency slot (gated by `maxConcurrentWorkers`)
+- `running` — active, stdout heartbeat within threshold
+- `stalled` — no stdout activity for N seconds, process still alive
+- `zombie` — process dead but no completion marker written
+- `done` / `failed` — terminal, completion marker present
+
+The watchdog derives health from: stdout inactivity timer, OS process liveness check (`kill -0`), and presence of `.orc-done.json`. Full watchdog loop is nice-to-have; the state taxonomy is MVP so dashboard cards and logs are meaningful from day one.
 
 ### PM / Reviewer states [MVP]
 `idle → running → done | failed`
@@ -220,13 +232,34 @@ interface WorkerResult {
 }
 ```
 
-**MVP implementation:** `CodexCLIAdapter` — spawns `codex` as a child process in `ctx.worktreePath`, streams stdout to `WorkerProgress` events. On exit, writes `.orc-done.json` to the worktree root (`{ status, exitCode, ts }`), then reads git diff for the result.
+**MVP implementation:** `CodexCLIAdapter` — spawns `codex` as a child process in `ctx.worktreePath`, streams stdout to `WorkerProgress` events. On exit:
+1. Writes `.orc-done.json` to the worktree root: `{ status, exitCode, ts }`
+2. Writes `.orc-session.jsonl` alongside it: one JSON line per structured output chunk from Codex
+
+**Session event log [MVP — implementation is cheap]:**
+`.orc-session.jsonl` captures the full structured output of the Codex run. On retry or resume, `ContextManager` reads this file, summarises the prior session (last N lines or a brief LLM summary), and prepends it to the new worker's prompt:
+
+```
+Prior attempt summary: Codex got as far as creating the bass pattern file
+but failed when trying to import the Strudel module. It wrote partial code to
+src/instruments/bass.js before exiting with error: "Cannot find module '@strudel/core'".
+```
+
+This gives the retry agent real context about what was attempted, not just the error message. Raw logs remain for inspection.
 
 **Post-MVP adapters:** `ClaudeCodeAdapter`, `OpenCodeAdapter` — same interface, drop-in swap.
 
 ---
 
-## 9. Delegation Tree & Retry Logic
+## 9. Delegation Tree, Concurrency & Retry Logic
+
+### Concurrency governor [MVP]
+
+The orchestrator maintains a global semaphore: `maxConcurrentWorkers` (default: 4, configurable). When a Lead tries to spawn a worker and the cap is reached, the worker enters `queued` state and waits. The semaphore releases when any worker reaches a terminal state (`done`, `failed`, `cancelled`).
+
+This prevents subprocess load collapse, API rate-limit exhaustion, and local machine contention during the demo. Without it, spawning 12 parallel Codex processes at once will degrade or crash the demo.
+
+Config location: `orc.config.ts` (or `.orcrc.json`), key `maxConcurrentWorkers`. Overridable per-run via `orc run --max-workers N`.
 
 ### Level 1 — Worker retry [MVP — basic retry only]
 
@@ -340,6 +373,10 @@ skills/
   mastermind.md · lead.md · pm-agent.md · implementer.md · reviewer.md  # MVP
   security.md · patch-worker.md                                          # post-MVP
 
+templates/
+  strudel-track.toml    # MVP — Strudel demo template
+  # future: rest-api.toml, react-app.toml, ...
+
 docs/superpowers/specs/
 ```
 
@@ -362,7 +399,85 @@ orc dashboard
 
 ---
 
-## 15. Key Design Decisions
+## 16. Workflow Templates / Task Recipes [MVP for Strudel template]
+
+Instead of calling the LLM to figure out decomposition from scratch every time, the Mastermind can use a **workflow template** — a predefined task recipe that specifies sections, dependency ordering, and default prompt hints. The LLM then fills in the per-section prompts rather than inventing the structure.
+
+This makes the demo faster, more reliable, and more intentional. For freeform goals (`orc run "build me a REST API"`), the LLM decomposes freely. For known domains, a template provides guardrails.
+
+### Template format
+
+```toml
+# templates/strudel-track.toml
+
+[template]
+name    = "strudel-track"
+version = "1.0"
+description = "Lo-fi / electronic track with parallel instrument sections"
+
+[[sections]]
+id          = "rhythm"
+label       = "Rhythm Section"
+depends_on  = []
+workers     = 2          # spawn 2 parallel variations
+prompt_hint = """
+Write a Strudel pattern for the rhythm section (bass + drums).
+Use the 'sound' and 'note' functions. Keep it minimal and loopable.
+Target tempo: {tempo}bpm, key: {key}.
+"""
+
+[[sections]]
+id          = "harmony"
+label       = "Harmony / Chords"
+depends_on  = ["rhythm"]   # waits for rhythm section to complete
+workers     = 2
+prompt_hint = """
+Write a Strudel chord pattern that complements the rhythm section.
+Rhythm section output: {rhythm.winner_diff}
+"""
+
+[[sections]]
+id          = "melody"
+label       = "Lead Melody"
+depends_on  = ["rhythm", "harmony"]
+workers     = 3
+prompt_hint = """
+Write a Strudel lead melody over the rhythm and harmony.
+Rhythm: {rhythm.winner_diff}
+Harmony: {harmony.winner_diff}
+"""
+
+[[sections]]
+id          = "arrangement"
+label       = "Final Arrangement"
+depends_on  = ["rhythm", "harmony", "melody"]
+workers     = 1
+prompt_hint = """
+Combine all sections into a final Strudel arrangement with proper
+mix levels, effects, and structure. Import from the winning branches.
+"""
+
+[params]
+tempo = 90
+key   = "Dm"
+```
+
+### How the Mastermind uses it
+
+1. If a matching template exists for the goal (by name or auto-detected), load it
+2. Render `prompt_hint` fields with known params + prior section outputs
+3. Respect `depends_on` ordering — sections with unsatisfied deps stay `queued`
+4. Fall back to full LLM decomposition if no template matches
+
+### Template location
+
+```
+templates/
+  strudel-track.toml    # MVP — Strudel demo template
+  # future: rest-api.toml, react-app.toml, etc.
+```
+
+The `--template` flag overrides auto-detection: `orc run "lo-fi track" --template strudel-track`.
 
 1. **Single Node.js process** — all coordination is in-process for MVP. Redis added for live dashboard.
 2. **SQLite is always authoritative** — Redis rebuilt from SQLite on boot.
@@ -372,3 +487,7 @@ orc dashboard
 6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
 7. **Worker commands always via Lead** — workers have no Redis channels. Steering routes to Lead inbox; Lead forwards via in-process queue.
 8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
+9. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
+10. **Health taxonomy over raw running/failed** — `queued|running|stalled|zombie|done|failed` gives watchdog and dashboard real signal. Taxonomy is MVP; full watchdog loop is post-MVP.
+11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
+12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
