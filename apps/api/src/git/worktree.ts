@@ -11,10 +11,19 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
 export interface WorktreeInfo { path: string; branch: string | null; head: string }
 
+/** Create a worktree on a NEW branch (branch must not exist yet) */
 export async function createWorktree(repoRoot: string, wtPath: string, branch: string): Promise<void> {
   const resolved = path.resolve(wtPath)
   await fs.mkdir(path.dirname(resolved), { recursive: true })
   await git(repoRoot, ['worktree', 'add', '-b', branch, resolved, 'HEAD'])
+  await fs.mkdir(path.join(resolved, '.orc'), { recursive: true })
+}
+
+/** Create a worktree for an EXISTING branch (no -b flag) */
+export async function addWorktreeForBranch(repoRoot: string, wtPath: string, branch: string): Promise<void> {
+  const resolved = path.resolve(wtPath)
+  await fs.mkdir(path.dirname(resolved), { recursive: true })
+  await git(repoRoot, ['worktree', 'add', resolved, branch])
   await fs.mkdir(path.join(resolved, '.orc'), { recursive: true })
 }
 
@@ -45,20 +54,26 @@ export async function hasUncommittedChanges(wtPath: string): Promise<boolean> {
   try { return (await git(wtPath, ['status', '--porcelain'])).length > 0 } catch { return false }
 }
 
+/** Create a branch at HEAD without switching the working tree — safe when run mid-orchestration */
 export async function createBranch(repoRoot: string, branch: string): Promise<void> {
-  await git(repoRoot, ['checkout', '-b', branch])
+  await git(repoRoot, ['branch', branch])
 }
 
+/**
+ * Merge sourceBranch into the worktree at targetWorktreePath.
+ * The caller must pass a worktree that is already checked out to the target branch.
+ * This never touches the main working directory.
+ */
 export async function mergeBranch(
-  repoRoot: string, targetBranch: string, sourceBranch: string,
+  targetWorktreePath: string,
+  sourceBranch: string,
 ): Promise<{ success: boolean; conflictFiles: string[] }> {
   try {
-    await git(repoRoot, ['checkout', targetBranch])
-    await git(repoRoot, ['merge', sourceBranch, '--no-ff', '-m', `merge: ${sourceBranch}`])
+    await git(targetWorktreePath, ['merge', sourceBranch, '--no-ff', '-m', `merge: ${sourceBranch}`])
     return { success: true, conflictFiles: [] }
   } catch {
-    const conflicts = await git(repoRoot, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')
-    await git(repoRoot, ['merge', '--abort']).catch(() => {})
+    const conflicts = await git(targetWorktreePath, ['diff', '--name-only', '--diff-filter=U']).catch(() => '')
+    await git(targetWorktreePath, ['merge', '--abort']).catch(() => {})
     return { success: false, conflictFiles: conflicts.split('\n').filter(Boolean) }
   }
 }

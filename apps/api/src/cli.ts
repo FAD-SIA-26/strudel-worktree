@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import * as http from 'node:http'
 import * as path from 'node:path'
+import * as url from 'node:url'
 import { initDb } from './db/client'
 import { createApp } from './server/app'
 import { attachWebSocket } from './server/wsHandler'
@@ -13,7 +14,12 @@ import { createLLMClientFromEnv } from './orchestrator/llm'
 import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
 
-const DB_PATH = process.env.ORC_DB_PATH ?? path.join(process.cwd(), 'orc.db')
+// Resolve repo root from cli.ts location (apps/api/src/cli.ts → ../../..)
+const __filename = url.fileURLToPath(import.meta.url)
+const __dirname  = path.dirname(__filename)
+const REPO_ROOT  = path.resolve(__dirname, '../../..')
+
+const DB_PATH = process.env.ORC_DB_PATH ?? path.join(REPO_ROOT, 'orc.db')
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
 
 const program = new Command().name('orc').version('0.1.0')
@@ -36,11 +42,31 @@ program
     watchdog.start()
 
     const m = new MastermindStateMachine({
-      repoRoot:            process.cwd(),
+      repoRoot:            REPO_ROOT,
       db, governor:        gov,
       runId:               opts.runId,
       agentFactory:        opts.mock ? () => new MockAgent({ delayMs: 200, outcome: 'done' }) : () => new CodexCLIAdapter(),
-      llmCall:             createLLMClientFromEnv(),
+      // In --mock mode, use a stub LLM that returns a sensible Strudel decomposition
+      // so the demo works without an API key
+      llmCall:             opts.mock
+        ? async (p: string) => {
+            if (p.includes('Decompose') || p.includes('decompose')) {
+              return JSON.stringify([
+                { id: 'drums',       goal: 'Write drum pattern in Strudel.js',      numWorkers: 2, dependsOn: [] },
+                { id: 'bass',        goal: 'Write bass line in Strudel.js',          numWorkers: 2, dependsOn: [] },
+                { id: 'chords',      goal: 'Write chord pattern in Strudel.js',      numWorkers: 2, dependsOn: ['bass'] },
+                { id: 'melody',      goal: 'Write lead melody in Strudel.js',        numWorkers: 3, dependsOn: ['chords'] },
+                { id: 'arrangement', goal: 'Write final Strudel.js arrangement',     numWorkers: 1, dependsOn: ['drums','bass','chords','melody'] },
+              ])
+            }
+            if (p.includes('Generate') || p.includes('prompts')) {
+              return JSON.stringify(['Write a minimal lo-fi pattern', 'Write a rhythmic groove pattern'])
+            }
+            // reviewer — pick v1
+            const match = p.match(/([\w-]+-v1)/)
+            return JSON.stringify({ winnerId: match?.[1] ?? 'drums-v1', reasoning: 'mock reviewer selected v1' })
+          }
+        : createLLMClientFromEnv(),
       leadQueues:          leadQs,
       maxConcurrentWorkers: parseInt(opts.maxWorkers),
     })

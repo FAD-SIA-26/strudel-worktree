@@ -22,11 +22,12 @@ describe('LeadStateMachine', () => {
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
-        return JSON.stringify({ winnerId: 'rhythm-v1', reasoning: 'best diff' })
+        // reviewer receives full namespaced workerId (r1-rhythm-v1), must return it
+        return JSON.stringify({ winnerId: 'r1-rhythm-v1', reasoning: 'best diff' })
       },
     })
     const result = await lead.run()
     expect(result.status).toBe('done')
-    expect(result.winnerBranch).toBe('feat/rhythm-v1')
+    expect(result.winnerBranch).toBe('feat/r1-rhythm-v1')
   }, 30_000)
 })

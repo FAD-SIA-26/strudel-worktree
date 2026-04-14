@@ -38,13 +38,13 @@ export class MergeCoordinator {
       if (r.success) {
         sqlite.prepare("UPDATE merge_queue SET status='done', merged_at=? WHERE lead_id=? AND winner_worktree_id=?").run(Date.now(), req.leadId, req.worktreeId)
         writeEvent(this.cfg.db, { entityId: 'mastermind', entityType: 'mastermind', eventType: 'MergeComplete',
-          sequence: nextSeq('mastermind-merge'), ts: Date.now(), payload: { mergeId, targetBranch: req.targetBranch } } as OrcEvent, () => {})
+          sequence: nextSeq('mastermind'), ts: Date.now(), payload: { mergeId, targetBranch: req.targetBranch } } as OrcEvent, () => {})
         this.cfg.onComplete?.(mergeId, req.targetBranch)
       } else {
         sqlite.prepare("UPDATE merge_queue SET status='conflict', conflict_details=? WHERE lead_id=? AND winner_worktree_id=?")
               .run(JSON.stringify({ files: r.conflictFiles }), req.leadId, req.worktreeId)
         writeEvent(this.cfg.db, { entityId: 'mastermind', entityType: 'mastermind', eventType: 'MergeConflict',
-          sequence: nextSeq('mastermind-merge'), ts: Date.now(), payload: { mergeId, conflictFiles: r.conflictFiles } } as OrcEvent, () => {})
+          sequence: nextSeq('mastermind'), ts: Date.now(), payload: { mergeId, conflictFiles: r.conflictFiles } } as OrcEvent, () => {})
         this.cfg.onConflict?.(mergeId, r.conflictFiles)
       }
     } catch (err: any) {

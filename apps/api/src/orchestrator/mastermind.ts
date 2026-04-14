@@ -7,7 +7,7 @@ import { createRunPlan } from '../git/planFiles'
 import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
 import { MergeCoordinator } from './mergeCoordinator'
-import { mergeBranch, createBranch } from '../git/worktree'
+import { mergeBranch, createBranch, addWorktreeForBranch } from '../git/worktree'
 import { CommandQueue } from '../events/commandQueues'
 import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
@@ -23,7 +23,7 @@ interface MastermindConfig {
   agentFactory: () => WorkerAgent
   llmCall:     (prompt: string) => Promise<string>
   leadQueues?: Map<string, CommandQueue<OrcCommand>>
-  doMerge?:    (targetBranch: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
+  doMerge?:    (targetWorktreePath: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
   templatePath?: string
   maxConcurrentWorkers?: number
 }
@@ -72,8 +72,17 @@ export class MastermindStateMachine {
     }).catch(() => '')
 
     const runBranch = `run/${this.cfg.runId}`
+    // Create the run branch without switching the main working tree
     await createBranch(this.cfg.repoRoot, runBranch).catch(err => {
       if (!err.message?.includes('already exists')) throw err
+    })
+
+    // Create a dedicated worktree for the run branch — all merges happen there,
+    // never touching the main working directory.
+    // Branch already exists (created above), so use addWorktreeForBranch (no -b flag)
+    const runWtPath = path.join(this.cfg.repoRoot, '.worktrees', `run-${this.cfg.runId}`)
+    await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch).catch(err => {
+      if (!err.message?.includes('already exists') && !err.message?.includes('is already checked out')) throw err
     })
 
     this.emit('PlanReady', { sections: sections.map(s => s.id), runId: this.cfg.runId })
@@ -144,12 +153,14 @@ export class MastermindStateMachine {
     }
 
     this.state = 'merging'
-    const doMerge = this.cfg.doMerge ?? ((target, source) => mergeBranch(this.cfg.repoRoot, target, source))
+    // Merges happen in the dedicated run worktree — the main worktree is never affected
+    const doMerge = this.cfg.doMerge ?? ((_target, source) => mergeBranch(runWtPath, source))
     const mergeConflicts: string[] = []
+    const mergeFailures: string[] = []
     const mc = new MergeCoordinator({
       db: this.cfg.db, repoRoot: this.cfg.repoRoot, doMerge,
-      onConflict: (id) => { mergeConflicts.push(id) },
-      onFailed: (_id, reason) => { this.emit('OrchestrationFailed', { reason: `merge failed: ${reason}` }) },
+      onConflict: (id)         => { mergeConflicts.push(id) },
+      onFailed:   (id, reason) => { mergeFailures.push(reason); this.emit('OrchestrationFailed', { reason: `merge failed: ${reason}` }) },
     })
 
     for (const [sectionId, result] of sectionResults) {
@@ -165,9 +176,12 @@ export class MastermindStateMachine {
 
     await mc.drainQueue()
 
-    if (mergeConflicts.length > 0) {
+    if (mergeConflicts.length > 0 || mergeFailures.length > 0) {
       this.state = 'failed'
-      this.emit('OrchestrationFailed', { reason: `${mergeConflicts.length} merge conflict(s) unresolved` })
+      const reason = mergeConflicts.length > 0
+        ? `${mergeConflicts.length} merge conflict(s) unresolved`
+        : `${mergeFailures.length} merge(s) failed: ${mergeFailures[0]}`
+      this.emit('OrchestrationFailed', { reason })
       return { status: 'failed' }
     }
 
