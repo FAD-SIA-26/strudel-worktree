@@ -20,14 +20,15 @@
 
 **[DEGRADED] shortcuts:**
 - `orc resume` = restart + load state from SQLite; no worktree reconciliation
-- `routeDirective()` = accepted by API, logged; no entity queue routing
 - Preview = Strudel URL generation; no generic local dev-server
-- Merge conflict = MergeConflict event emitted; user sees A/B/C modal; no auto-repair
+- Merge conflict = MergeConflict event emitted; no auto-repair
+- OrchestrationComplete = "all leads done + all merges done"; does not track optional sections, stalled/zombie states, or merge_queue failure semantics from spec §3
 
 **[POST-DEMO] (not in this plan):**
 - Merge-fix worker
 - Full crash recovery with worktree reconciliation
 - Generic preview launcher (local dev-server)
+- `routeDirective()` NL steering — API stub only, not routed to entity queues
 - Rich NL steering routing
 - Compare tab
 
@@ -568,7 +569,7 @@ export const artifacts = sqliteTable('artifacts', {
   artifactType: text('artifact_type').notNull(),
   path:         text('path').notNull(),
   updatedAt:    integer('updated_at').notNull(),
-})
+}, t => ({ uniqEntityArtifact: uniqueIndex('entity_artifact_uniq').on(t.entityId, t.artifactType) }))
 ```
 
 - [ ] **Step 4: Implement client.ts**
@@ -583,7 +584,9 @@ import * as url from 'node:url'
 import * as schema from './schema'
 
 export type Db = BetterSQLite3Database<typeof schema>
-const MIGRATIONS_DIR = path.join(url.fileURLToPath(import.meta.url), '..', 'migrations')
+const __filename = url.fileURLToPath(import.meta.url)
+const __dirname  = path.dirname(__filename)
+const MIGRATIONS_DIR = path.join(__dirname, 'migrations')
 
 let _db: Db | null = null
 
@@ -637,6 +640,14 @@ export function getEventsSince(db: Db, afterId: number) {
     id: number; entityId: string; entityType: string; eventType: string; sequence: number; payload: string; ts: number
   }>
 }
+
+/** Monotonic sequence counter per entity — use this instead of Date.now() for sequence */
+const _seqs = new Map<string, number>()
+export function nextSeq(entityId: string): number {
+  const n = (_seqs.get(entityId) ?? 0) + 1
+  _seqs.set(entityId, n)
+  return n
+}
 ```
 
 - [ ] **Step 6: Implement queries.ts**
@@ -665,7 +676,7 @@ export function upsertWorktree(db: Db, id: string, workerId: string, wtPath: str
 }
 export function upsertArtifact(db: Db, entityId: string, artifactType: string, filePath: string): void {
   getSQLite(db).prepare(`INSERT INTO artifacts(entity_id,artifact_type,path,updated_at) VALUES(?,?,?,?)
-    ON CONFLICT DO UPDATE SET path=excluded.path, updated_at=excluded.updated_at`).run(entityId, artifactType, filePath, Date.now())
+    ON CONFLICT(entity_id,artifact_type) DO UPDATE SET path=excluded.path, updated_at=excluded.updated_at`).run(entityId, artifactType, filePath, Date.now())
 }
 ```
 
@@ -1066,6 +1077,7 @@ import type { WorkerAgent, WorkerTask, WorkerContext, WorkerResult } from './typ
 import { eventBus } from '../events/eventBus'
 import { writeDoneMarker } from '../git/reconcile'
 import { getWorktreeDiff } from '../git/worktree'
+import { nextSeq } from '../db/journal'
 
 export class CodexCLIAdapter implements WorkerAgent {
   private proc: ReturnType<typeof spawn> | null = null
@@ -1085,7 +1097,7 @@ export class CodexCLIAdapter implements WorkerAgent {
         const line = chunk.toString()
         await session.write(JSON.stringify({ ts: Date.now(), output: line }) + '\n')
         eventBus.publish({ entityId: ctx.entityId, entityType: 'worker', eventType: 'WorkerProgress',
-          sequence: Date.now(), ts: Date.now(), payload: { output: line, ts: Date.now() } } as any)
+          sequence: nextSeq(ctx.entityId), ts: Date.now(), payload: { output: line, ts: Date.now() } } as any)
       })
 
       const finish = async (code: number | null) => {
@@ -1287,6 +1299,7 @@ import type { WorkerTask, WorkerAgent } from '../agents/types'
 import type { Db } from '../db/client'
 import { writeEvent } from '../db/journal'
 import { upsertTask, upsertWorktree } from '../db/queries'
+import { nextSeq } from '../db/journal'
 import { createWorktree } from '../git/worktree'
 import { createWorkerPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
@@ -1311,16 +1324,20 @@ interface WorkerConfig {
 
 export class WorkerStateMachine {
   state: WorkerState = 'queued'
-  private seq = 0
+  readonly id: string           // public — safe to read in tests and lead
+  readonly branch: string       // public — reviewer needs the winning branch
   private agent: WorkerAgent | null = null
   private slotHeld = false   // guard against double-release
 
-  constructor(private readonly cfg: WorkerConfig) {}
+  constructor(private readonly cfg: WorkerConfig) {
+    this.id     = cfg.id
+    this.branch = cfg.branch
+  }
 
   private emit(eventType: string, payload: Record<string, unknown>): void {
     const event: OrcEvent = {
       entityId: this.cfg.id, entityType: 'worker',
-      eventType: eventType as any, sequence: ++this.seq, ts: Date.now(), payload,
+      eventType: eventType as any, sequence: nextSeq(this.cfg.id), ts: Date.now(), payload,
     }
     writeEvent(this.cfg.db, event, () => {
       upsertTask(this.cfg.db, this.cfg.id, 'worker', this.cfg.leadId, this.state)
@@ -1492,6 +1509,7 @@ import * as fs from 'node:fs/promises'
 import type { Db } from '../db/client'
 import { writeEvent } from '../db/journal'
 import { upsertTask } from '../db/queries'
+import { nextSeq } from '../db/journal'
 import { createLeadPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
 import { WorkerStateMachine } from './worker'
@@ -1522,7 +1540,6 @@ interface LeadConfig {
 
 export class LeadStateMachine {
   state: LeadState = 'idle'
-  private seq = 0
   private ctx: ContextManager
 
   constructor(private readonly cfg: LeadConfig) {
@@ -1532,7 +1549,7 @@ export class LeadStateMachine {
   private emit(eventType: string, payload: Record<string, unknown>): void {
     const event: OrcEvent = {
       entityId: this.cfg.id, entityType: 'lead',
-      eventType: eventType as any, sequence: ++this.seq, ts: Date.now(), payload,
+      eventType: eventType as any, sequence: nextSeq(this.cfg.id), ts: Date.now(), payload,
     }
     writeEvent(this.cfg.db, event, () => {
       upsertTask(this.cfg.db, this.cfg.id, 'lead', 'mastermind', this.state)
@@ -1581,11 +1598,11 @@ export class LeadStateMachine {
     }))
 
     const results = await Promise.allSettled(
-      workers.map((w, i) => w.run({ id: w['cfg'].id, prompt: workerPrompts[i], maxRetries: this.cfg.maxRetries ?? 1, errorHistory: [] }))
+      workers.map((w, i) => w.run({ id: w.id, prompt: workerPrompts[i], maxRetries: this.cfg.maxRetries ?? 1, errorHistory: [] }))
     )
 
     const done = results
-      .map((r, i) => ({ r, id: workers[i]['cfg'].id, branch: workers[i]['cfg'].branch }))
+      .map((r, i) => ({ r, id: workers[i].id, branch: workers[i].branch }))
       .filter(x => x.r.status === 'fulfilled' && (x.r as PromiseFulfilledResult<any>).value.status === 'done')
       .map(x => ({ workerId: x.id, diff: (x.r as PromiseFulfilledResult<any>).value.diff ?? '', branch: x.branch }))
 
@@ -1739,9 +1756,12 @@ import * as fs from 'node:fs/promises'
 import type { Db } from '../db/client'
 import { writeEvent } from '../db/journal'
 import { upsertTask } from '../db/queries'
+import { nextSeq } from '../db/journal'
 import { createRunPlan } from '../git/planFiles'
 import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
+import { MergeCoordinator } from './mergeCoordinator'
+import { mergeBranch } from '../git/worktree'
 import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
 import type { OrcEvent } from '@orc/types'
@@ -1755,6 +1775,7 @@ interface MastermindConfig {
   runId:       string
   agentFactory: () => WorkerAgent
   llmCall:     (prompt: string) => Promise<string>
+  doMerge?:    (targetBranch: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
   templatePath?: string
   maxConcurrentWorkers?: number
 }
@@ -1763,7 +1784,6 @@ export type MastermindState = 'idle'|'planning'|'delegating'|'monitoring'|'mergi
 
 export class MastermindStateMachine {
   state: MastermindState = 'idle'
-  private seq = 0
   private ctx: ContextManager
 
   constructor(private readonly cfg: MastermindConfig) {
@@ -1773,7 +1793,7 @@ export class MastermindStateMachine {
   private emit(eventType: string, payload: Record<string, unknown>): void {
     const event: OrcEvent = {
       entityId: 'mastermind', entityType: 'mastermind',
-      eventType: eventType as any, sequence: ++this.seq, ts: Date.now(), payload,
+      eventType: eventType as any, sequence: nextSeq('mastermind'), ts: Date.now(), payload,
     }
     writeEvent(this.cfg.db, event, () => {
       upsertTask(this.cfg.db, 'mastermind', 'mastermind', null, this.state)
@@ -1813,15 +1833,31 @@ export class MastermindStateMachine {
     const resolved = new Set<string>()
     const remaining = [...sections]
 
+    const failed = new Set<string>()
+
     while (remaining.length > 0) {
-      // Pick all sections whose deps are resolved
+      // Pick sections whose deps are all resolved (not failed, not pending)
       const batch = remaining.filter(s => s.dependsOn.every(d => resolved.has(d)))
+
       if (batch.length === 0) {
-        // Circular dependency — run all remaining sections anyway
-        batch.push(...remaining.splice(0))
-      } else {
-        batch.forEach(s => remaining.splice(remaining.indexOf(s), 1))
+        // Distinguish: blocked by failure vs true circular dependency
+        const blockedByFailure = remaining.filter(s => s.dependsOn.some(d => failed.has(d)))
+        if (blockedByFailure.length > 0) {
+          // These sections can never run because an upstream section failed — mark them failed
+          for (const s of blockedByFailure) {
+            sectionResults.set(s.id, { status: 'failed', winnerBranch: '' })
+            failed.add(s.id)
+            remaining.splice(remaining.indexOf(s), 1)
+          }
+          continue
+        }
+        // Remaining sections have unresolvable deps (true cycle) — fail orchestration
+        this.state = 'failed'
+        this.emit('OrchestrationFailed', { reason: 'circular or unresolvable section dependencies' })
+        return { status: 'failed' }
       }
+
+      batch.forEach(s => remaining.splice(remaining.indexOf(s), 1))
 
       const batchResults = await Promise.allSettled(
         batch.map(section => {
@@ -1849,7 +1885,12 @@ export class MastermindStateMachine {
         if (r.status === 'fulfilled') {
           const { section, result } = r.value
           sectionResults.set(section.id, { status: result.status, winnerBranch: result.winnerBranch })
-          resolved.add(section.id)
+          if (result.status === 'done') { resolved.add(section.id) }
+          else                          { failed.add(section.id) }
+        } else {
+          // rejected promise — treat the section as failed
+          const section = batch[batchResults.indexOf(r)]
+          if (section) failed.add(section.id)
         }
       }
     }
@@ -1863,7 +1904,44 @@ export class MastermindStateMachine {
     }
 
     this.state = 'merging'
-    // MergeCoordinator drains the merge_queue here (Task 11 wires this in)
+
+    // Wire MergeCoordinator: collect all merge requests from leads and drain the queue
+    const doMerge = this.cfg.doMerge ?? ((target, source) => mergeBranch(this.cfg.repoRoot, target, source))
+    const mergeConflicts: string[] = []
+    const mc = new MergeCoordinator({
+      db: this.cfg.db,
+      repoRoot: this.cfg.repoRoot,
+      doMerge,
+      onConflict: (id) => {
+        mergeConflicts.push(id)
+        // [DEGRADED] Surface conflict to dashboard via event; no auto-repair
+      },
+      onFailed: (_id, reason) => {
+        // non-optional merge failure → orchestration fails (see §3 OrchestrationFailed spec)
+        this.emit('OrchestrationFailed', { reason: `merge failed: ${reason}` })
+      },
+    })
+
+    // Enqueue all winning branches from section results
+    for (const [sectionId, result] of sectionResults) {
+      if (result.status === 'done' && result.winnerBranch) {
+        mc.enqueue({
+          leadId:       `${sectionId}-lead`,
+          worktreeId:   result.winnerBranch.replace('feat/', ''),
+          winnerBranch: result.winnerBranch,
+          targetBranch: `run/${this.cfg.runId}`,
+        })
+      }
+    }
+
+    await mc.drainQueue()
+
+    if (mergeConflicts.length > 0) {
+      // [DEGRADED] Conflicts surfaced via MergeConflict events; no auto-repair
+      // For MVP: conflicts are visible in dashboard; user must handle externally
+      // [POST-DEMO] spawn merge-fix worker per conflict
+    }
+
     this.state = 'done'
     this.emit('OrchestrationComplete', { runBranch: `run/${this.cfg.runId}` })
     return { status: 'done' }
@@ -2248,34 +2326,138 @@ tempo = 90
 key = "Dm"
 ```
 
-- [ ] **Step 7: Create all 8 skills files**
+- [ ] **Step 7: Create all 8 skills files — write each file verbatim**
 
 ```bash
 mkdir -p skills
 ```
 
-`skills/mastermind.md` — Role: top-level orchestrator. Decompose user goal into sections, spawn Leads, monitor, trigger MergeCoordinator. Output: JSON array `[{id, goal, numWorkers, dependsOn}]`. Constraints: 2-5 sections, no circular deps.
+Write each file with exactly the content below:
 
-`skills/lead.md` — Role: section coordinator. Spawn PM, workers, reviewer. Emit ReviewComplete, MergeRequested. Constraints: never bypass reviewer, always emit LeadDone after merge request.
+```markdown
+<!-- skills/mastermind.md -->
+# Mastermind Skills
 
-`skills/pm-agent.md` — Role: generate N distinct implementation prompts for workers. Output: JSON string array. Constraints: prompts must differ in approach, include error history if present.
+## Role
+You are the Mastermind orchestrator. Receive a user goal, decompose it into 2-5 independent sections, spawn Lead teams, monitor progress, and trigger the MergeCoordinator when all leads are done.
 
-`skills/implementer.md` — Role: focused implementation worker. Read worker-plan.md, implement, update checklist, write .orc-done.json on exit. Constraints: only touch assigned files, run tests, summarize in Result Summary.
+## Output schema
+JSON array: `[{ "id": string, "goal": string, "numWorkers": number, "dependsOn": string[] }]`
 
-`skills/reviewer.md` — Role: MVP arbitration layer. Compare worker diffs, pick winner. Output: `{"winnerId": string, "reasoning": string}`. Note: reviewer judgment is a heuristic, not a guarantee.
+## Constraints
+- Maximum 5 sections
+- No circular dependencies in dependsOn
+- Each section must be independently implementable
+- Prefer parallel sections (empty dependsOn) unless data dependency is real
+```
 
-`skills/run-planner.md` — Role: write run-plan.md for Mastermind. Format: Goal, Architecture, Sections & Dependencies, Success Criteria, Status. Keep under 2 pages. Update at section boundaries only.
+```markdown
+<!-- skills/lead.md -->
+# Lead Skills
 
-`skills/lead-planner.md` — Role: write lead section plan. Format: Section Objective, Worker Variants, Review Criteria, Status, Notes. Update on: spawn, completion, reviewer decision, retry.
+## Role
+You coordinate a section team: PM agent, N parallel Implementer workers, and a Reviewer. Spawn workers, wait for results, run the reviewer, emit ReviewComplete and MergeRequested.
 
-`skills/worker-planner.md` — Role: write and maintain .orc/worker-plan.md. Format: Objective, Acceptance Criteria, Files, Constraints, Checklist, Progress Notes, Blockers, Result Summary. Update at: start, major step, error, finish.
+## Constraints
+- Never skip the reviewer when multiple workers succeed
+- Always emit LeadDone after a successful merge request
+- Emit LeadFailed only after all retry options are exhausted
+```
 
-```bash
-# Create skill files with the content above (each as a real markdown file)
-for skill in mastermind lead pm-agent implementer reviewer run-planner lead-planner worker-planner; do
-  echo "# ${skill} Skills" > skills/${skill}.md
-done
-# (implementer fills each with the content described above)
+```markdown
+<!-- skills/pm-agent.md -->
+# PM Agent Skills
+
+## Role
+Generate N distinct implementation prompts for parallel workers. Each prompt must describe a meaningfully different approach so workers produce varied outputs.
+
+## Output schema
+JSON array of strings: `["prompt for v1", "prompt for v2", ...]`
+
+## Constraints
+- Prompts must differ in approach, not just wording
+- Each prompt must be a complete, self-contained implementation instruction
+- If errorHistory is non-empty, guide workers away from those failed approaches
+```
+
+```markdown
+<!-- skills/implementer.md -->
+# Implementer Skills
+
+## Role
+You are a focused implementation worker in your assigned git worktree. Read your worker-plan.md, implement the solution, update the checklist, and write a Result Summary when done.
+
+## Constraints
+- Only modify files directly related to your assigned task
+- Do not refactor unrelated code
+- Run tests before marking complete
+- Update .orc/worker-plan.md Result Summary before finishing
+- The runner writes .orc/.orc-done.json automatically on exit — do not write it yourself
+```
+
+```markdown
+<!-- skills/reviewer.md -->
+# Reviewer Skills
+
+## Role
+You are the MVP arbitration layer for a section. Compare all worker outputs and select the best one. You are a strong heuristic, not a guarantee of correctness.
+
+## Output schema
+JSON: `{ "winnerId": string, "reasoning": string }`
+
+## Constraints
+- Select exactly one winner
+- Reasoning must reference specific technical qualities (correctness, blast radius, readability)
+- If all implementations are equivalent, prefer the smallest diff
+```
+
+```markdown
+<!-- skills/run-planner.md -->
+# Run Planner Skills
+
+## Role
+Write the run-plan.md for a Mastermind orchestration run. This is the top-level reference document for all leads and workers.
+
+## Required sections
+Goal · Architecture · Sections & Dependencies · Success Criteria · Integration Notes · Status
+
+## Constraints
+- Keep under 2 pages
+- Status section updated at section boundaries only — not continuously
+- The plan is execution memory; SQLite projections are authoritative
+```
+
+```markdown
+<!-- skills/lead-planner.md -->
+# Lead Planner Skills
+
+## Role
+Write and maintain the section-level plan file for a Lead team.
+
+## Required sections
+Section Objective · Acceptance Criteria · Files / Boundaries · Worker Variants · Review Criteria · Status · Notes
+
+## Constraints
+- Update on: worker spawn, worker completion, reviewer decision, retry
+- Record decisions and outcomes only — not transcripts
+- Keep Worker Variants accurate to actual strategies spawned
+```
+
+```markdown
+<!-- skills/worker-planner.md -->
+# Worker Planner Skills
+
+## Role
+Write and maintain the worker task sheet at .orc/worker-plan.md.
+
+## Required sections
+Objective · Acceptance Criteria · Files Likely To Change · Constraints · Checklist · Progress Notes · Blockers · Result Summary
+
+## Constraints
+- Update at: start, after planning, after major step, before finish, on error
+- Keep notes brief — checklist, not diary
+- Result Summary must be filled before marking task done
+- Do not invent new sections; update existing ones only
 ```
 
 - [ ] **Step 8: Commit**
@@ -2954,7 +3136,7 @@ export default function Page() {
         <span className="text-blue-400 font-bold text-sm">⬡ WorkTree Orchestrator</span>
         <span className="text-[10px] text-gray-500 ml-2">{data?.mastermindState ?? 'idle'}</span>
         <span className="ml-auto text-[10px] text-gray-600">
-          Approve/Drop/Preview → dashboard buttons &nbsp;·&nbsp; NL steering → [POST-DEMO]
+          Approve / Drop / Preview → action buttons &nbsp;·&nbsp; NL steering → [POST-DEMO]
         </span>
       </div>
 
