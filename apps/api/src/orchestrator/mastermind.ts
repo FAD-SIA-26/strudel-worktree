@@ -12,6 +12,7 @@ import { CommandQueue } from '../events/commandQueues'
 import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
 import type { OrcEvent, OrcCommand } from '@orc/types'
+import { getOrcPaths } from '../runtime/paths'
 
 interface SectionPlan { id: string; goal: string; numWorkers: number; dependsOn: string[] }
 
@@ -54,7 +55,7 @@ export class MastermindStateMachine {
     this.state = 'planning'
     this.emit('CommandIssued', { from: 'user', to: 'mastermind', commandType: 'Run', commandPayload: { goal: opts.userGoal } })
 
-    const runDir = path.join(this.cfg.repoRoot, '.orc', 'runs', this.cfg.runId)
+    const runDir = path.join(getOrcPaths(this.cfg.repoRoot).runsDir, this.cfg.runId)
     await fs.mkdir(path.join(runDir, 'leads'), { recursive: true })
 
     let sections: SectionPlan[]
@@ -80,7 +81,7 @@ export class MastermindStateMachine {
     // Create a dedicated worktree for the run branch — all merges happen there,
     // never touching the main working directory.
     // Branch already exists (created above), so use addWorktreeForBranch (no -b flag)
-    const runWtPath = path.join(this.cfg.repoRoot, '.worktrees', `run-${this.cfg.runId}`)
+    const runWtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, `run-${this.cfg.runId}`)
     await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch).catch(err => {
       if (!err.message?.includes('already exists') && !err.message?.includes('is already checked out')) throw err
     })

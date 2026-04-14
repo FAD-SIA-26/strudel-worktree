@@ -7,6 +7,7 @@ import { createWorktree } from '../git/worktree'
 import { createWorkerPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
 import type { OrcEvent } from '@orc/types'
+import { getOrcPaths } from '../runtime/paths'
 
 export type WorkerState = 'queued'|'spawning'|'running'|'stalled'|'zombie'|'done'|'failed'|'retrying'|'cancelled'
 
@@ -56,7 +57,7 @@ export class WorkerStateMachine {
     this.state = 'spawning'
     this.emit('WorkerProgress', { output: 'creating worktree', ts: Date.now() })
 
-    const wtPath = path.join(this.cfg.repoRoot, '.worktrees', this.cfg.id)
+    const wtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, this.cfg.id)
     try {
       await createWorktree(this.cfg.repoRoot, wtPath, this.cfg.branch)
     } catch (err: any) {

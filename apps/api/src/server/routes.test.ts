@@ -13,6 +13,20 @@ describe('routes', () => {
     expect(res.body).toHaveProperty('sections')
   })
 
+  it('GET / redirects to the dashboard when configured', async () => {
+    const db = createTestDb()
+    const app = createApp({
+      db,
+      leadQueues: new Map(),
+      dashboardUrl: 'http://localhost:3000',
+    })
+
+    const res = await request(app).get('/')
+
+    expect(res.status).toBe(302)
+    expect(res.headers.location).toBe('http://localhost:3000')
+  })
+
   it('POST /api/approve enqueues ForceApprove to lead queue', async () => {
     const db = createTestDb()
     const leadQ = new CommandQueue<any>()

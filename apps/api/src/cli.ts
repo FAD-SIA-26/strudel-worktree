@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import * as http from 'node:http'
 import * as path from 'node:path'
 import * as url from 'node:url'
+import * as fs from 'node:fs/promises'
 import { initDb } from './db/client'
 import { createApp } from './server/app'
 import { attachWebSocket } from './server/wsHandler'
@@ -16,6 +17,8 @@ import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
 import { seedSeqsFromDb } from './db/journal'
 import { findRepoRootSync, hasCommittedHeadSync } from './git/worktree'
+import { ensureDashboardServer } from './runtime/dashboard'
+import { getOrcAppRoots, getOrcPaths } from './runtime/paths'
 
 function resolveRepoRoot(): string {
   if (process.env.ORC_REPO_ROOT) return process.env.ORC_REPO_ROOT
@@ -29,8 +32,24 @@ function resolveRepoRoot(): string {
 }
 
 const REPO_ROOT = resolveRepoRoot()
-const DB_PATH = process.env.ORC_DB_PATH ?? path.join(REPO_ROOT, 'orc.db')
+const { webRoot: WEB_ROOT } = getOrcAppRoots(import.meta.url)
+const ORC_PATHS = getOrcPaths(REPO_ROOT)
+const DB_PATH = process.env.ORC_DB_PATH ?? ORC_PATHS.dbPath
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
+const DASHBOARD_PORT = parseInt(process.env.ORC_DASHBOARD_PORT ?? '3000')
+
+function registerCleanup(cleanup: () => void): () => void {
+  const handler = () => {
+    cleanup()
+    process.exit(0)
+  }
+  process.once('SIGINT', handler)
+  process.once('SIGTERM', handler)
+  return () => {
+    process.off('SIGINT', handler)
+    process.off('SIGTERM', handler)
+  }
+}
 
 const program = new Command().name('orc').version('0.1.0')
 
@@ -58,14 +77,28 @@ program
       process.exit(1)
     }
 
+    await fs.mkdir(ORC_PATHS.stateDir, { recursive: true })
+
     const db     = initDb(DB_PATH)
     seedSeqsFromDb(db)   // prevent UNIQUE violations if DB already has sequences from a prior run
     const gov    = new ConcurrencyGovernor(parseInt(opts.maxWorkers))
     const leadQs = new Map<string, CommandQueue<any>>()
-    const app    = createApp({ db, leadQueues: leadQs })
+    const dashboard = await ensureDashboardServer({
+      apiPort: PORT,
+      dashboardPort: DASHBOARD_PORT,
+      stateDir: ORC_PATHS.stateDir,
+      webRoot: WEB_ROOT,
+    })
+    const app    = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url })
     const server = http.createServer(app)
     attachWebSocket(server)
-    server.listen(PORT, () => console.log(`[orc] dashboard → http://localhost:${PORT}  |  open apps/web`))
+    await new Promise<void>(resolve => server.listen(PORT, resolve))
+    const unregisterCleanup = registerCleanup(() => {
+      dashboard.stop()
+      server.close()
+    })
+
+    console.log(`[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${PORT}`)
 
     const watchdog = new Watchdog({ db, intervalMs: 5000, stalledThresholdMs: 60_000 })
     watchdog.start()
@@ -104,6 +137,8 @@ program
     const result = await m.run({ userGoal: goal })
     watchdog.stop()
     console.log(`[orc] orchestration ${result.status}`)
+    unregisterCleanup()
+    dashboard.stop()
     server.close(() => process.exit(result.status === 'done' ? 0 : 1))
   })
 
@@ -119,15 +154,25 @@ program
   .command('resume')
   .description('[DEGRADED] Restart and show persisted state. Worktree reconciliation is [POST-DEMO].')
   .action(async () => {
+    await fs.mkdir(ORC_PATHS.stateDir, { recursive: true })
     const db     = initDb(DB_PATH)
     seedSeqsFromDb(db)
     const leadQs = new Map<string, CommandQueue<any>>()
-    const app    = createApp({ db, leadQueues: leadQs })
+    const dashboard = await ensureDashboardServer({
+      apiPort: PORT,
+      dashboardPort: DASHBOARD_PORT,
+      stateDir: ORC_PATHS.stateDir,
+      webRoot: WEB_ROOT,
+    })
+    const app    = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url })
     const server = http.createServer(app)
     attachWebSocket(server)
-    server.listen(PORT, () => {
-      console.log(`[orc] resumed dashboard at http://localhost:${PORT}`)
+    await new Promise<void>(resolve => server.listen(PORT, resolve))
+    registerCleanup(() => {
+      dashboard.stop()
+      server.close()
     })
+    console.log(`[orc] resumed dashboard at ${dashboard.url}`)
     const inFlight = getAllTasks(db).filter(t => ['running','queued','stalled','zombie'].includes(t.state))
     if (inFlight.length) { console.log('[orc] in-flight tasks:'); console.table(inFlight) }
     else console.log('[orc] no in-flight tasks found')
