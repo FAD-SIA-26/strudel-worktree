@@ -10,7 +10,8 @@ export function initTestRepo(label = `${Date.now()}`): string {
   execSync('git config user.email "test@orc.test"', { cwd: dir, stdio: 'pipe' })
   execSync('git config user.name "OrcTest"', { cwd: dir, stdio: 'pipe' })
   fs.writeFileSync(path.join(dir, 'README.md'), '# orc test repo')
-  execSync('git add . && git commit -m "init"', { cwd: dir, stdio: 'pipe' })
+  execSync('git add .', { cwd: dir, stdio: 'pipe' })
+  execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' })
   return dir
 }
 
