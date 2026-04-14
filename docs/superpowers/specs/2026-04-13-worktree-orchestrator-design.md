@@ -85,6 +85,14 @@ Mastermind
 ### Mastermind states [MVP]
 `idle → planning → delegating → monitoring → merging → done | failed`
 
+**OrchestrationComplete** (transitions Mastermind to `done`) when:
+- ALL `tasks` have `status IN ('done', 'cancelled')`
+- AND ALL `merge_queue` entries have `status = 'done'`
+- AND no tasks remain in `running | queued | retrying | stalled | zombie`
+
+**OrchestrationFailed** (transitions Mastermind to `failed`) when:
+- ANY non-optional task reaches `status = 'failed'` with `maxRetries` exhausted and no Level 2/3 recovery path available
+
 ### SectionLead states [MVP]
 `idle → planning → running → reviewing → merging → done | failed | escalated`
 
@@ -133,8 +141,15 @@ Categories are fixed; exact column set evolves during implementation:
 - **tasks** — entity id, type, parent_id, state, retry_count, task_prompt, strategy, spawn_generation
 - **runs** — executing agents, adapter type, pid, started_at, last_output_ts
 - **worktrees** — worker_id, path, branch, base_branch, git_status, diff_summary
+
+**Git branch naming convention:**
+```
+feat/{section-id}-v{n}          # e.g. feat/rhythm-v1, feat/melody-v3
+feat/{section-id}-v{n}-r{retry} # e.g. feat/rhythm-v1-r2  (retry 2 of worker v1)
+```
+Maps 1:1 to worktree paths (`.worktrees/rhythm-v1`). Readable with `git branch --list feat/*`.
 - **merge_candidates** — lead_id, winner_worker_id, target_branch, reviewer_reasoning
-- **merge_queue** — lead_id, winner_worktree_id, target_branch, status, conflict_details, created_at, merged_at
+- **merge_queue** — lead_id, winner_worktree_id, target_branch, status, conflict_details, created_at, merged_at *(full schema in §18)*
 - **task_edges** *(likely extra)* — parent_id, child_id, dependency type, `retry_of`
 - **previews** — worktree_id, port, url, status, launched_at  *(MVP — required by preview launcher)*
 - **agent_sessions** *(likely extra)* — entity_id, adapter, pid, status
@@ -376,9 +391,33 @@ Three-panel layout served by Express + WebSocket on port 4000 (default):
 
 **Top bar [MVP]:** Global orchestration status + natural language steering input (routes to Mastermind).
 
-**Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Each worktree gets a port from a pool (tracked in the `previews` projection). For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
+**Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Port pool: `PORT_POOL_START=3100`, size 50 (supports up to 50 simultaneous previews). Port assigned as `3100 + (worktree_index % 50)`, tracked in `previews` projection. For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
 
-Frontend: **Next.js** (App Router). WebSocket client subscribes to dashboard server, which subscribes to Redis broadcast. TanStack Query handles REST data fetching for initial state hydration. All API request/response types imported from `@orc/types`. This is why Redis moves to MVP alongside the dashboard.
+**Frontend:** Next.js App Router. All API types from `@orc/types`.
+
+**WebSocket architecture — explicit boundary:**
+```
+apps/api/src/server/ws.ts    ← WebSocket SERVER (Express + ws library, port 4000)
+apps/web/src/ws/client.ts    ← WebSocket CLIENT (browser, connects to api:4000)
+```
+The dashboard is a Next.js client that connects to the Express WebSocket server. Next.js API routes are **not** used for WebSocket — do not attempt WebSocket upgrades via Route Handlers.
+
+**TanStack Query + WebSocket hydration pattern:**
+```typescript
+// Initial state: TanStack Query fetches REST snapshot
+const { data } = useQuery({
+  queryKey: ['orchestration'],
+  queryFn: () => fetch('/api/orchestration').then(r => r.json()),
+});
+
+// Live updates: WebSocket events patch the cache directly
+useEffect(() => {
+  ws.on('WorkerStateChanged', (event) => {
+    queryClient.setQueryData(['orchestration'], (old) => applyEvent(old, event));
+  });
+}, []);
+```
+REST for initial hydration. WebSocket events as cache patches. Never mix: a REST poll and a live WebSocket update on the same data will produce inconsistent UI state.
 
 ---
 
@@ -461,6 +500,28 @@ orc dashboard
 
 ---
 
+## 15. Key Design Decisions
+
+1. **Single Node.js process** — all coordination is in-process for MVP. Redis added for live dashboard.
+2. **SQLite is always authoritative** — Redis rebuilt from SQLite on boot.
+3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
+4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
+5. **Redis Streams, not pub/sub** — durable consumption, cursor-based reconnect, boot order safe.
+6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
+7. **Worker commands always via Lead** — workers have no Redis channels. Steering routes to Lead inbox; Lead forwards via in-process queue.
+8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
+9. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
+10. **Health taxonomy over raw running/failed** — `queued|running|stalled|zombie|done|failed` gives watchdog and dashboard real signal. Taxonomy is MVP; full watchdog loop is post-MVP.
+11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
+12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
+13. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
+14. **Merge coordinator is serialized** — merges never run concurrently. One queue, one merge at a time, with a defined state flow and conflict escalation path.
+15. **PM agent always runs as LLM call (Option B)** — even for template-driven runs, the PM agent makes a real LLM call to render `prompt_hint` variables into a rich, context-aware worker prompt. Adds latency per section but produces higher-quality prompts than string interpolation alone.
+16. **Git branch naming is fixed** — `feat/{section-id}-v{n}` for initial workers, `feat/{section-id}-v{n}-r{retry}` for retries. Maps 1:1 to worktree paths.
+17. **WebSocket server lives in `apps/api`** — Next.js API routes are never used for WebSocket. The dashboard connects as a plain browser WebSocket client to `api:4000`.
+
+---
+
 ## 16. Workflow Templates / Task Recipes [MVP for Strudel template]
 
 Instead of calling the LLM to figure out decomposition from scratch every time, the Mastermind can use a **workflow template** — a predefined task recipe that specifies sections, dependency ordering, and default prompt hints. The LLM then fills in the per-section prompts rather than inventing the structure.
@@ -527,7 +588,7 @@ key   = "Dm"
 ### How the Mastermind uses it
 
 1. If a matching template exists for the goal (by name or auto-detected), load it
-2. Render `prompt_hint` fields with known params + prior section outputs
+2. PM agent receives `prompt_hint` + rendered params + prior section `winner_diff` as context → makes a full LLM call → outputs a rich, context-aware worker prompt (Option B — see §15 decision 15)
 3. Respect `depends_on` ordering — sections with unsatisfied deps stay `queued`
 4. Fall back to full LLM decomposition if no template matches
 
@@ -540,25 +601,6 @@ templates/
 ```
 
 The `--template` flag overrides auto-detection: `orc run "lo-fi track" --template strudel-track`.
-
----
-
-## 15. Key Design Decisions
-
-1. **Single Node.js process** — all coordination is in-process for MVP. Redis added for live dashboard.
-2. **SQLite is always authoritative** — Redis rebuilt from SQLite on boot.
-3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
-4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
-5. **Redis Streams, not pub/sub** — durable consumption, cursor-based reconnect, boot order safe.
-6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
-7. **Worker commands always via Lead** — workers have no Redis channels. Steering routes to Lead inbox; Lead forwards via in-process queue.
-8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
-9. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
-10. **Health taxonomy over raw running/failed** — `queued|running|stalled|zombie|done|failed` gives watchdog and dashboard real signal. Taxonomy is MVP; full watchdog loop is post-MVP.
-11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
-12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
-13. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool tracked in `previews` projection.
-14. **Merge coordinator is serialized** — merges never run concurrently. One queue, one merge at a time, with a defined state flow and conflict escalation path. Not just "merge winning worktree → main".
 
 ---
 
