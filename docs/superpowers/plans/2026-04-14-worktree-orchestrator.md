@@ -890,6 +890,11 @@ export async function hasUncommittedChanges(wtPath: string): Promise<boolean> {
   try { return (await git(wtPath, ['status', '--porcelain'])).length > 0 } catch { return false }
 }
 
+/** Create a new branch at HEAD (used to create the run/<id> integration branch before merges) */
+export async function createBranch(repoRoot: string, branch: string): Promise<void> {
+  await git(repoRoot, ['checkout', '-b', branch])
+}
+
 export async function mergeBranch(
   repoRoot: string, targetBranch: string, sourceBranch: string,
 ): Promise<{ success: boolean; conflictFiles: string[] }> {
@@ -1791,7 +1796,7 @@ import { createRunPlan } from '../git/planFiles'
 import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
 import { MergeCoordinator } from './mergeCoordinator'
-import { mergeBranch } from '../git/worktree'
+import { mergeBranch, createBranch } from '../git/worktree'
 import { CommandQueue } from '../events/commandQueues'
 import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
@@ -1856,6 +1861,13 @@ export class MastermindStateMachine {
     const runPlanPath = await createRunPlan(this.cfg.repoRoot, this.cfg.runId, {
       userGoal: opts.userGoal, sections: sections.map(s => s.id),
     }).catch(() => '')
+
+    // Create the run/<id> integration branch before any lead merges target it
+    const runBranch = `run/${this.cfg.runId}`
+    await createBranch(this.cfg.repoRoot, runBranch).catch(err => {
+      // Branch may already exist on resume — only fail on unexpected errors
+      if (!err.message?.includes('already exists')) throw err
+    })
 
     this.emit('PlanReady', { sections: sections.map(s => s.id), runId: this.cfg.runId })
     this.state = 'delegating'
@@ -2195,6 +2207,14 @@ export class MergeCoordinator {
     }
     if (this.queue.length > 0) await this.processNext()
   }
+
+  /** Process all queued items to completion. Resolves when queue is empty. */
+  async drainQueue(): Promise<void> {
+    while (this.queue.length > 0 || this.processing) {
+      if (!this.processing) await this.processNext()
+      else await new Promise(r => setTimeout(r, 50))
+    }
+  }
 }
 ```
 
@@ -2279,16 +2299,28 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getSQLite, type Db } from '../db/client'
 
-/** Reads the winning code file from the worktree and returns a Strudel playground URL */
-export async function generateStrudelPreviewUrl(worktreePath: string, codeFile = 'index.js'): Promise<string> {
+/**
+ * Derives the expected Strudel code file from the section/worker ID.
+ * Instrument workers write to src/<section>.js; arrangement writes src/index.js.
+ * e.g. "drums-v1" → src/drums.js, "arrangement-v1" → src/index.js
+ */
+function codeFileForWorker(worktreeId: string): string {
+  const sectionId = worktreeId.replace(/-v\d+(-r\d+)?$/, '')  // strip -v1 or -v1-r2
+  return sectionId === 'arrangement' ? 'src/index.js' : `src/${sectionId}.js`
+}
+
+/** Reads the worker's code file and returns a Strudel playground URL */
+export async function generateStrudelPreviewUrl(worktreePath: string, worktreeId: string): Promise<string> {
+  const codeFile = codeFileForWorker(worktreeId)
   let code = ''
-  try { code = await fs.readFile(path.join(worktreePath, codeFile), 'utf-8') } catch { code = '// no code found' }
+  try { code = await fs.readFile(path.join(worktreePath, codeFile), 'utf-8') }
+  catch { code = `// ${codeFile} not yet written` }
   const encoded = Buffer.from(code).toString('base64url')
   return `https://strudel.cc/#${encoded}`
 }
 
 export async function launchPreview(db: Db, worktreeId: string, worktreePath: string): Promise<string> {
-  const previewUrl = await generateStrudelPreviewUrl(worktreePath)
+  const previewUrl = await generateStrudelPreviewUrl(worktreePath, worktreeId)
   const id = `preview-${worktreeId}`
   getSQLite(db).prepare(`
     INSERT INTO previews(id, worktree_id, preview_url, status, launched_at)
@@ -2778,6 +2810,7 @@ program
       runId:               opts.runId,
       agentFactory:        opts.mock ? () => new MockAgent({ delayMs: 200, outcome: 'done' }) : () => new CodexCLIAdapter(),
       llmCall:             createLLMClientFromEnv(),
+      leadQueues:          leadQs,   // shared map — routes write commands, mastermind registers per-lead queues
       maxConcurrentWorkers: parseInt(opts.maxWorkers),
     })
 
@@ -2886,19 +2919,59 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
 function applyEvent(old: OrchState | undefined, ev: any): OrchState {
   if (!old) return { runId: 'current', mastermindState: 'idle', sections: [] }
-  const stateMap: Record<string, string> = {
+
+  // Worker state patches
+  const workerStateMap: Record<string, string> = {
     WorkerDone: 'done', WorkerFailed: 'failed', WorkerStalled: 'stalled',
     WorkerZombie: 'zombie', WorkerRecovered: 'running', WorkerProgress: 'running',
   }
-  if (stateMap[ev.eventType]) {
+  if (workerStateMap[ev.eventType]) {
     return {
       ...old,
       sections: old.sections.map(s => ({
         ...s,
-        workers: s.workers.map(w => w.id === ev.entityId ? { ...w, state: stateMap[ev.eventType] } : w),
+        workers: s.workers.map(w =>
+          w.id === ev.entityId ? { ...w, state: workerStateMap[ev.eventType] } : w
+        ),
       })),
     }
   }
+
+  // Lead state patches — derive section id from entityId (strip '-lead' suffix)
+  const leadStateMap: Record<string, string> = {
+    LeadPlanReady: 'running', ReviewComplete: 'reviewing',
+    MergeRequested: 'merging', LeadDone: 'done', LeadFailed: 'failed',
+  }
+  if (leadStateMap[ev.eventType]) {
+    const sectionId = (ev.entityId as string).replace('-lead', '')
+    return {
+      ...old,
+      sections: old.sections.map(s =>
+        s.id === sectionId ? { ...s, state: leadStateMap[ev.eventType] } : s
+      ),
+    }
+  }
+
+  // Mastermind state patches
+  const mastermindStateMap: Record<string, string> = {
+    PlanReady: 'delegating', LeadDelegated: 'monitoring',
+    OrchestrationComplete: 'done', OrchestrationFailed: 'failed',
+  }
+  if (mastermindStateMap[ev.eventType]) {
+    return { ...old, mastermindState: mastermindStateMap[ev.eventType] }
+  }
+
+  // LeadDelegated: also adds the new section to the tree if not already present
+  if (ev.eventType === 'LeadDelegated') {
+    const sectionId = ev.payload?.sectionId as string
+    const exists = old.sections.some(s => s.id === sectionId)
+    return {
+      ...old,
+      mastermindState: 'monitoring',
+      sections: exists ? old.sections : [...old.sections, { id: sectionId, state: 'idle', workers: [] }],
+    }
+  }
+
   return old
 }
 
