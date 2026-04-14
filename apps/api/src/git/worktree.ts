@@ -10,21 +10,74 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 export interface WorktreeInfo { path: string; branch: string | null; head: string }
+interface WorktreeOptions {
+  hydrateDependencies?: boolean
+}
+
+async function listDependencyDirs(repoRoot: string): Promise<string[]> {
+  const relPaths = ['node_modules']
+
+  for (const parent of ['apps', 'packages']) {
+    const parentDir = path.join(repoRoot, parent)
+    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    try {
+      entries = await fs.readdir(parentDir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      relPaths.push(path.join(parent, entry.name, 'node_modules'))
+    }
+  }
+
+  return relPaths
+}
+
+async function symlinkDependencyDir(sourcePath: string, destPath: string): Promise<void> {
+  try {
+    await fs.lstat(destPath)
+    return
+  } catch {}
+
+  await fs.mkdir(path.dirname(destPath), { recursive: true })
+  const relativeSource = path.relative(path.dirname(destPath), sourcePath)
+  await fs.symlink(relativeSource, destPath, 'dir')
+}
+
+async function hydrateWorktreeDependencies(repoRoot: string, wtPath: string): Promise<void> {
+  for (const relPath of await listDependencyDirs(repoRoot)) {
+    const sourcePath = path.join(repoRoot, relPath)
+    try {
+      await fs.lstat(sourcePath)
+    } catch {
+      continue
+    }
+    await symlinkDependencyDir(sourcePath, path.join(wtPath, relPath))
+  }
+}
 
 /** Create a worktree on a NEW branch (branch must not exist yet) */
-export async function createWorktree(repoRoot: string, wtPath: string, branch: string): Promise<void> {
+export async function createWorktree(repoRoot: string, wtPath: string, branch: string, opts: WorktreeOptions = {}): Promise<void> {
   const resolved = path.resolve(wtPath)
   await fs.mkdir(path.dirname(resolved), { recursive: true })
   await git(repoRoot, ['worktree', 'add', '-b', branch, resolved, 'HEAD'])
   await fs.mkdir(path.join(resolved, '.orc'), { recursive: true })
+  if (opts.hydrateDependencies !== false) {
+    await hydrateWorktreeDependencies(repoRoot, resolved)
+  }
 }
 
 /** Create a worktree for an EXISTING branch (no -b flag) */
-export async function addWorktreeForBranch(repoRoot: string, wtPath: string, branch: string): Promise<void> {
+export async function addWorktreeForBranch(repoRoot: string, wtPath: string, branch: string, opts: WorktreeOptions = {}): Promise<void> {
   const resolved = path.resolve(wtPath)
   await fs.mkdir(path.dirname(resolved), { recursive: true })
   await git(repoRoot, ['worktree', 'add', resolved, branch])
   await fs.mkdir(path.join(resolved, '.orc'), { recursive: true })
+  if (opts.hydrateDependencies !== false) {
+    await hydrateWorktreeDependencies(repoRoot, resolved)
+  }
 }
 
 export async function removeWorktree(repoRoot: string, wtPath: string): Promise<void> {

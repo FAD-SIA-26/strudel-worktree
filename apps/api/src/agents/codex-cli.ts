@@ -19,6 +19,7 @@ export class CodexCLIAdapter implements WorkerAgent {
       'Do not invoke process skills such as using-superpowers, brainstorming, writing-plans, test-driven-development, or verification-before-completion.',
       'Do not stop after writing tests or scaffolding. Finish the actual feature.',
       'Do not run pnpm install, npm install, yarn install, or other dependency bootstrapping unless the task explicitly requires dependency changes.',
+      'Inside a worktree, prefer package-local binaries like ./apps/web/node_modules/.bin/next or ./apps/api/node_modules/.bin/vitest instead of workspace package-manager commands.',
       'Read the provided plan files, make the code changes, validate them, and finish autonomously.',
       'Update .orc/worker-plan.md before finishing.',
       '',
@@ -31,7 +32,7 @@ export class CodexCLIAdapter implements WorkerAgent {
     ].join('\n')
 
     return new Promise<WorkerResult>(resolve => {
-      const stderr: string[] = []
+      const failureDetails: string[] = []
       let heartbeatTimer: NodeJS.Timeout | null = null
       this.proc = spawn('codex', ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', prompt], {
         cwd: ctx.worktreePath,
@@ -43,15 +44,32 @@ export class CodexCLIAdapter implements WorkerAgent {
         void ctx.onHeartbeat?.({ pid: this.proc?.pid, ts: Date.now() })
       }, 5_000)
 
+      const captureFailureDetails = (line: string) => {
+        for (const rawLine of line.split('\n')) {
+          const trimmed = rawLine.trim()
+          if (!trimmed) continue
+          try {
+            const parsed = JSON.parse(trimmed)
+            if (parsed.type === 'error' && typeof parsed.message === 'string') {
+              failureDetails.push(parsed.message)
+            }
+            if (parsed.type === 'turn.failed' && typeof parsed.error?.message === 'string') {
+              failureDetails.push(parsed.error.message)
+            }
+          } catch {}
+        }
+      }
+
       this.proc.stdout?.on('data', async (chunk: Buffer) => {
         const line = chunk.toString()
         await session.write(JSON.stringify({ ts: Date.now(), output: line }) + '\n')
+        captureFailureDetails(line)
         void ctx.onHeartbeat?.({ pid: this.proc?.pid, output: line, ts: Date.now() })
       })
 
       this.proc.stderr?.on('data', async (chunk: Buffer) => {
         const line = chunk.toString()
-        stderr.push(line)
+        if (line.trim()) failureDetails.push(line.trim())
         await session.write(JSON.stringify({ ts: Date.now(), error: line }) + '\n')
         void ctx.onHeartbeat?.({ pid: this.proc?.pid, output: line, ts: Date.now() })
       })
@@ -64,7 +82,7 @@ export class CodexCLIAdapter implements WorkerAgent {
         if (status === 'done') {
           resolve({ status: 'done', branch: ctx.branch, diff: await getWorktreeDiff(ctx.worktreePath, ctx.baseBranch), retryable: false })
         } else {
-          const details = stderr.join('').trim()
+          const details = [...new Set(failureDetails.map(line => line.trim()).filter(Boolean))].join('\n')
           resolve({ status: 'failed', branch: ctx.branch, error: details ? `exit code ${code}: ${details}` : `exit code ${code}`, retryable: true })
         }
       }

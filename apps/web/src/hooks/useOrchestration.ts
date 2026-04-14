@@ -64,7 +64,7 @@ export function useOrchestration() {
   const query = useQuery<OrchState>({
     queryKey: ['orchestration'],
     queryFn: () => fetch(`${API}/api/orchestration`).then(r => r.json()),
-    refetchInterval: false,
+    refetchInterval: 2000,
   })
   useEffect(() => {
     orcWs.connect()

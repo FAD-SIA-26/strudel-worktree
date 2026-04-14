@@ -19,10 +19,14 @@ afterAll(() => cleanupTestRepo(repoDir))
 describe('worktree', () => {
   it('creates, lists, and removes a worktree', async () => {
     repoDir = initTestRepo('wt-test')
+    await fs.mkdir(path.join(repoDir, 'node_modules'), { recursive: true })
+    await fs.mkdir(path.join(repoDir, 'apps', 'web', 'node_modules'), { recursive: true })
     const wtPath = path.resolve(`${repoDir}/../wt-rhythm-v1`)
     await createWorktree(repoDir, wtPath, 'feat/rhythm-v1')
     const wts = await listWorktrees(repoDir)
     expect(wts.some(w => w.path === wtPath)).toBe(true)
+    expect((await fs.lstat(path.join(wtPath, 'node_modules'))).isSymbolicLink()).toBe(true)
+    expect((await fs.lstat(path.join(wtPath, 'apps', 'web', 'node_modules'))).isSymbolicLink()).toBe(true)
     await removeWorktree(repoDir, wtPath)
     const wts2 = await listWorktrees(repoDir)
     expect(wts2.some(w => w.path === wtPath)).toBe(false)
@@ -31,6 +35,17 @@ describe('worktree', () => {
   it('detects the current branch name for non-main repos', () => {
     repoDir = initTestRepo('wt-branch-test', { initialBranch: 'trunk' })
     expect(getCurrentBranchSync(repoDir)).toBe('trunk')
+  })
+
+  it('can skip dependency hydration for merge-only worktrees', async () => {
+    repoDir = initTestRepo('wt-run-branch-test')
+    await fs.mkdir(path.join(repoDir, 'node_modules'), { recursive: true })
+    execFileSync('git', ['branch', 'run/r1'], { cwd: repoDir, stdio: 'pipe' })
+
+    const wtPath = path.resolve(`${repoDir}/../run-r1-${path.basename(repoDir)}`)
+    await addWorktreeForBranch(repoDir, wtPath, 'run/r1', { hydrateDependencies: false })
+
+    await expect(fs.lstat(path.join(wtPath, 'node_modules'))).rejects.toThrow()
   })
 
   it('fast-forwards the user branch to the completed run branch while ignoring .orc state', async () => {

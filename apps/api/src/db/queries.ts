@@ -1,13 +1,35 @@
 import { getSQLite, type Db } from './client'
 
 export function getAllTasks(db: Db) {
-  return getSQLite(db).prepare('SELECT * FROM tasks ORDER BY type, id').all() as Array<{ id: string; type: string; parentId: string|null; state: string }>
+  return getSQLite(db).prepare(`
+    SELECT
+      id,
+      type,
+      parent_id AS parentId,
+      state
+    FROM tasks
+    ORDER BY type, id
+  `).all() as Array<{ id: string; type: string; parentId: string | null; state: string }>
 }
 export function getWorktrees(db: Db) {
-  return getSQLite(db).prepare('SELECT * FROM worktrees').all() as Array<{ id: string; workerId: string; path: string; branch: string; baseBranch: string }>
+  return getSQLite(db).prepare(`
+    SELECT
+      id,
+      worker_id AS workerId,
+      path,
+      branch,
+      base_branch AS baseBranch
+    FROM worktrees
+  `).all() as Array<{ id: string; workerId: string; path: string; branch: string; baseBranch: string }>
 }
 export function getPreviews(db: Db) {
-  return getSQLite(db).prepare("SELECT * FROM previews WHERE status='active'").all() as Array<{ worktreeId: string; previewUrl: string }>
+  return getSQLite(db).prepare(`
+    SELECT
+      worktree_id AS worktreeId,
+      preview_url AS previewUrl
+    FROM previews
+    WHERE status='active'
+  `).all() as Array<{ worktreeId: string; previewUrl: string }>
 }
 export function upsertTask(db: Db, id: string, type: string, parentId: string|null, state: string): void {
   const now = Date.now()

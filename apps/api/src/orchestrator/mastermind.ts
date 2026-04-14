@@ -83,7 +83,7 @@ export class MastermindStateMachine {
     // never touching the main working directory.
     // Branch already exists (created above), so use addWorktreeForBranch (no -b flag)
     const runWtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, `run-${this.cfg.runId}`)
-    await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch).catch(err => {
+    await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch, { hydrateDependencies: false }).catch(err => {
       if (!err.message?.includes('already exists') && !err.message?.includes('is already checked out')) throw err
     })
 

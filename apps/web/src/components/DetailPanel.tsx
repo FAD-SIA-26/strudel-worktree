@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SectionInfo, WorkerInfo } from '@orc/types'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
@@ -7,6 +7,9 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 export function DetailPanel({ selectedId, sections }: { selectedId: string | null; sections: SectionInfo[] }) {
   const isLead = selectedId?.endsWith('-lead') ?? false
   const [tab, setTab] = useState<'compare'|'plan'|'logs'|'preview'>(isLead ? 'compare' : 'plan')
+  useEffect(() => {
+    setTab(isLead ? 'compare' : 'plan')
+  }, [isLead, selectedId])
   if (!selectedId) return <div className="flex items-center justify-center h-full text-gray-600 text-sm">Select an entity from the tree</div>
 
   const sectionId = selectedId.replace('-lead', '')
@@ -22,6 +25,13 @@ export function DetailPanel({ selectedId, sections }: { selectedId: string | nul
     const leadId = isLead ? selectedId : (sections.find(s => s.workers.some(w => w.id === selectedId))?.id + '-lead')
     await fetch(`${API}/api/drop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workerId: selectedId, leadId }) })
   }
+  async function launchPreview(workerId: string) {
+    await fetch(`${API}/api/preview/launch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ worktreeId: workerId }),
+    })
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -32,10 +42,12 @@ export function DetailPanel({ selectedId, sections }: { selectedId: string | nul
             <button onClick={approve} className="text-[11px] bg-green-700 hover:bg-green-600 text-white px-3 py-1 rounded">&#10003; Approve</button>
           )}
           <button onClick={drop} className="text-[11px] bg-gray-700 hover:bg-red-800 text-red-300 px-3 py-1 rounded">&#10005; Drop</button>
-          {worker?.previewUrl && (
+          {worker?.previewUrl ? (
             <a href={worker.previewUrl} target="_blank" rel="noreferrer"
               className="text-[11px] bg-blue-800 hover:bg-blue-700 text-blue-200 px-3 py-1 rounded">&#9654; Preview</a>
-          )}
+          ) : worker ? (
+            <button onClick={() => launchPreview(worker.id)} className="text-[11px] bg-blue-900 hover:bg-blue-800 text-blue-200 px-3 py-1 rounded">&#9654; Launch Preview</button>
+          ) : null}
         </div>
       </div>
 
@@ -58,8 +70,10 @@ export function DetailPanel({ selectedId, sections }: { selectedId: string | nul
                   <span className="text-gray-200 font-bold">{w.id}</span>
                   <span className={`text-[10px] ${w.state === 'done' ? 'text-green-400' : w.state === 'running' ? 'text-blue-400' : w.state === 'failed' ? 'text-red-400' : 'text-gray-500'}`}>{w.state}</span>
                 </div>
-                {w.previewUrl && w.state === 'done' && (
-                  <a href={w.previewUrl} target="_blank" rel="noreferrer" className="text-[11px] bg-purple-800 hover:bg-purple-700 text-purple-200 px-3 py-1.5 rounded font-sans">&#9834; Listen</a>
+                {w.state === 'done' && (
+                  w.previewUrl
+                    ? <a href={w.previewUrl} target="_blank" rel="noreferrer" className="text-[11px] bg-purple-800 hover:bg-purple-700 text-purple-200 px-3 py-1.5 rounded font-sans">&#9834; Listen</a>
+                    : <button onClick={() => launchPreview(w.id)} className="text-[11px] bg-purple-900 hover:bg-purple-800 text-purple-200 px-3 py-1.5 rounded font-sans">&#9834; Launch</button>
                 )}
                 {w.state === 'done' && (
                   <button onClick={() => fetch(`${API}/api/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workerId: w.id, leadId: `${sectionId}-lead` }) })}

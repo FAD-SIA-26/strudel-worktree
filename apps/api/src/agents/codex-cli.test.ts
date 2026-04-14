@@ -96,6 +96,7 @@ describe('CodexCLIAdapter', () => {
     expect(prompt).toContain('Do not use brainstorming')
     expect(prompt).toContain('Do not invoke process skills such as using-superpowers')
     expect(prompt).toContain('Do not run pnpm install, npm install, yarn install')
+    expect(prompt).toContain('prefer package-local binaries like ./apps/web/node_modules/.bin/next')
     expect(prompt).toContain('Update .orc/worker-plan.md')
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), output: 'codex process started' }))
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ output: 'worker output\n' }))
@@ -137,5 +138,37 @@ describe('CodexCLIAdapter', () => {
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), output: 'codex process started' }))
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), ts: expect.any(Number) }))
     expect(onHeartbeat.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('surfaces structured Codex error messages on failure', async () => {
+    const proc = makeProc()
+    spawnMock.mockReturnValue(proc)
+    openMock.mockResolvedValue({ write: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) })
+
+    const runPromise = new CodexCLIAdapter().run(
+      { id: 'w3', prompt: 'fail meaningfully', maxRetries: 1, errorHistory: [] },
+      {
+        worktreePath: path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`),
+        branch: 'feat/w3',
+        baseBranch: 'main',
+        entityId: 'w3',
+        planPath: 'worker-plan.md',
+        leadPlanPath: 'lead-plan.md',
+        runPlanPath: 'run-plan.md',
+      },
+    )
+
+    setImmediate(() => {
+      proc.stderr.emit('data', Buffer.from('Reading additional input from stdin...\n'))
+      proc.stdout.emit('data', Buffer.from('{"type":"error","message":"You hit a usage limit."}\n'))
+      proc.emit('close', 1)
+    })
+
+    await expect(runPromise).resolves.toEqual({
+      status: 'failed',
+      branch: 'feat/w3',
+      error: 'exit code 1: Reading additional input from stdin...\nYou hit a usage limit.',
+      retryable: true,
+    })
   })
 })
