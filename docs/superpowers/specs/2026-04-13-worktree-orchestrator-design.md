@@ -727,12 +727,16 @@ Coordinator processes queue one at a time:
   3b. conflict → emit MergeConflict → Mastermind spawns merge-fix worker
         ↓
 Merge-fix worker receives:
-  - target branch + winning branch
-  - conflict files + raw merge output
-  - acceptance goal ("produce a valid, runnable merged result")
-  → Codex resolves conflicts in a fresh worktree → emits MergeResolved
+  - target branch (run/<id>) + winning branch
+  - other candidate branch context (if useful)
+  - conflict files + raw git merge output
+  - explicit acceptance criteria ("produce a valid, runnable merged result")
+  → Codex edits conflicted files in a fresh repair worktree
+  → runs lint / tests / build / preview check
+  → if valid, repair branch becomes the merge result candidate
+  → emits MergeResolved
         ↓
-Coordinator retries merge with fix applied
+Coordinator retries merge with repaired branch applied
         ↓
 If merge-fix worker fails repeatedly (maxMergeRetries) →
   Mastermind surfaces high-level decision to user in dashboard:
@@ -745,6 +749,22 @@ All merges done → Mastermind fast-forwards run/<id> → main → emits Orchest
 ```
 
 **The user never resolves code-level conflicts.** The merge-fix worker handles all code-level repair. The user only makes product-level decisions (A/B/C above) if automated repair fails.
+
+### Merge-fix worker scope
+
+**May:**
+- Edit conflicted files in the repair worktree
+- Run lint / tests / build to validate the fix
+- Launch a preview to verify the result is runnable
+- Summarize what it changed and why
+
+**May not:**
+- Re-plan the section or rewrite files unrelated to the conflict
+- Spawn additional subworkers
+- Change product intent without surfacing it to the user
+- Broadly refactor beyond the conflicted scope
+
+The merge-fix worker is a **repair worker**, not a second Mastermind. Its scope is bounded to the conflict and the acceptance criteria it was given.
 
 ### merge_queue projection
 
