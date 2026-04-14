@@ -377,6 +377,8 @@ On `LeadFailed`: spawn fresh Lead team, mark section optional and continue, or e
 - `buildMastermindCtx()` — user goal + project file tree + git log → LLM call → structured plan
 - `buildLeadCtx(leadId)` — section task + prior attempt errors → PM agent prompt
 - `buildReviewerCtx(leadId)` — all worker diffs → reviewer prompt
+
+**Reviewer framing:** the reviewer is an **MVP arbitration layer**, not a universal evaluation truth source. It works well when outputs are independently valid, comparable, and diffable (Strudel patterns, isolated feature files, small scoped tasks). It is weaker for refactors, cross-cutting changes, or tasks where "best diff" ≠ "correct integration." Post-MVP signals to augment or replace it: lint/typecheck pass, test results, execution-based scoring, human approval weighting.
 - `routeDirective(text)` — NL directive → target entity + command type [**MVP**]
 
 **Cross-lead context** (sibling lead summaries in each lead's context) → [nice-to-have]
@@ -456,7 +458,7 @@ Three-panel layout served by Express + WebSocket on port 4000 (default):
 - For a Lead: reviewer verdict, side-by-side diff comparison of worker variations, **Approve / Drop / Spawn another** action buttons.
 - For a Worker: agent output log, health status, retry/abort controls.
 
-**Right panel [MVP]:** Live event stream from `orchestration:broadcast` Redis channel via WebSocket. Shows what every entity is doing in real time.
+**Right panel [MVP]:** Live event stream from the in-memory event bus via WebSocket. Shows what every entity is doing in real time.
 
 **Top bar [MVP]:** Global orchestration status + natural language steering input (routes to Mastermind).
 
@@ -507,9 +509,10 @@ apps/
       orchestrator/     # mastermind.ts, lead.ts, worker.ts, context.ts
                         # recovery.ts (nice-to-have)
       agents/           # WorkerAgent interface, codex-cli.ts, mock.ts
-      redis/            # client.ts, streams.ts, broadcast.ts
+      events/           # eventBus.ts (in-memory EventEmitter), wsHandler.ts
       git/              # worktree.ts, reconcile.ts
       server/           # Express app, routes, WebSocket handler
+      # redis/          # post-MVP — client.ts, streams.ts, broadcast.ts
       cli.ts            # orc run, orc status, orc resume
     drizzle.config.ts
     package.json
@@ -558,7 +561,8 @@ docs/superpowers/specs/
 # MVP
 orc run "build a lo-fi track"   # decompose → spawn leads → workers → review → merge
 orc status                       # print current orchestration state from SQLite
-orc resume                       # resume after restart (nice-to-have: full recovery)
+orc resume                       # MVP: restarts the process and picks up live state from SQLite
+                                 # full robust crash recovery (worktree reconciliation etc.) is post-MVP
 
 # nice-to-have
 orc steer "make bass darker"
@@ -575,7 +579,8 @@ orc dashboard
 2. **SQLite is always authoritative** — in-memory event bus is ephemeral; SQLite is the durable record. Dashboard hydrates from SQLite on reconnect.
 3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
 4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
-5. **All cross-role interactions are journaled events** — no direct worker-to-worker calls. CommandIssued / WorkerProgress / ReviewerSelectedWinner / MergeRequested / MergeConflict / MergeResolved all go into event_log. Dashboard reads the same history.
+5. **All cross-role interactions are journaled events** — no direct worker-to-worker calls. Core event types go into event_log; dashboard reads the same history. Do not over-formalize: event structure serves current-state visibility, logs, retries, reviewer verdict, merge flow, and dashboard rendering — nothing more in MVP.
+18. **Merge target is `run/<id>`, not `main`** — section winners merge into a run branch. Only at orchestration end does the Mastermind fast-forward `run/<id>` → `main`. Prevents integration weirdness during parallel section execution.
 6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
 7. **Worker commands always via Lead** — no entity is addressed directly from outside its parent. Steering routes to Lead; Lead forwards to worker via in-process queue.
 8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
@@ -704,7 +709,9 @@ The watchdog does **not** make retry decisions — it observes and emits. The Le
 
 ## 18. Merge Coordinator [MVP] {#s18}
 
-Merges are never run concurrently. All merge requests flow through a single serialized coordinator to prevent git conflicts between simultaneous lead merges.
+Merges are never run concurrently. All merge requests flow through a single serialized coordinator.
+
+**Merge target is `run/<orchestration-id>`, not `main`.** Each orchestration run creates a dedicated integration branch (e.g. `run/abc123`). Section winners are merged into this branch one at a time. Only after all sections are merged and the run is marked `done` does the Mastermind fast-forward (or squash-merge) `run/<id>` → `main`. This prevents integration weirdness where an early-merged section assumes structure that later sections haven't yet produced.
 
 ### Merge flow
 
@@ -715,7 +722,7 @@ MergeCoordinator appends to merge_queue (SQLite)
         ↓
 Coordinator processes queue one at a time:
   1. fetch latest main
-  2. git merge feat/<section> --no-ff
+  2. git merge feat/<section> --no-ff  (onto run/<orchestration-id>)
   3a. clean merge → emit MergeComplete → next in queue
   3b. conflict → emit MergeConflict → Mastermind spawns merge-fix worker
         ↓
@@ -734,7 +741,7 @@ If merge-fix worker fails repeatedly (maxMergeRetries) →
     C. Fail the orchestration
   User picks A/B/C — never touches code directly
         ↓
-All merges done → Mastermind emits OrchestrationComplete
+All merges done → Mastermind fast-forwards run/<id> → main → emits OrchestrationComplete
 ```
 
 **The user never resolves code-level conflicts.** The merge-fix worker handles all code-level repair. The user only makes product-level decisions (A/B/C above) if automated repair fails.
@@ -743,14 +750,17 @@ All merges done → Mastermind emits OrchestrationComplete
 
 ```sql
 CREATE TABLE merge_queue (
-  id           INTEGER PRIMARY KEY,
-  lead_id      TEXT    NOT NULL,
-  winner_worktree_id TEXT NOT NULL,
-  target_branch TEXT   NOT NULL DEFAULT 'main',
-  status       TEXT    NOT NULL DEFAULT 'pending',  -- pending|merging|done|conflict|failed
-  conflict_details JSON,
-  created_at   INTEGER NOT NULL,
-  merged_at    INTEGER
+  id                 INTEGER PRIMARY KEY,
+  lead_id            TEXT    NOT NULL,
+  winner_worktree_id TEXT    NOT NULL,
+  target_branch      TEXT    NOT NULL,  -- run/<orchestration-id>
+  status             TEXT    NOT NULL DEFAULT 'pending',
+                             -- pending|merging|done|conflict|fixing|failed
+  conflict_details   JSON,
+  fix_worker_id      TEXT,   -- entity_id of the merge-fix worker, if spawned
+  fix_attempts       INTEGER NOT NULL DEFAULT 0,
+  created_at         INTEGER NOT NULL,
+  merged_at          INTEGER
 );
 ```
 
