@@ -27,7 +27,7 @@ Web dashboard — live tree, event stream
 Steer / approve / drop / compare / preview
 ```
 
-**Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → reviewer picks the best output → winning branch merges to main. That is a complete, winning demo.
+**Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → user watches live in dashboard → reviewer picks the best output → winning branch merges into the orchestration run branch → once all sections are integrated, the run branch is fast-forwarded to main. That is a complete, winning demo.
 
 Sections below are marked **[MVP]** or **[nice-to-have]**. Nice-to-have sections are specced for future reference but not required for the hackathon build.
 
@@ -232,7 +232,7 @@ Core event types:
 | `ReviewerSelectedWinner` | reviewer → lead | `{ leadId, winnerId, reasoning }` |
 | `MergeRequested` | lead → coordinator | `{ leadId, worktreeId, targetBranch }` |
 | `MergeConflict` | coordinator → mastermind | `{ mergeId, conflictFiles }` |
-| `MergeResolved` | merge-fix worker → coordinator | `{ mergeId, strategy }` |
+| `MergeResolved` | merge-fix worker → coordinator | `{ mergeId, repairBranch, summary, checksPassed }` |
 
 This gives full orchestration visibility through the event log. The dashboard reads the same history.
 
@@ -253,29 +253,34 @@ On crash: `pending` entries replayed on next boot. Must run after coroutines res
 
 ---
 
-## 7. Crash Recovery — Boot Sequence [nice-to-have]
+## 7. Crash Recovery — Boot Sequence
 
-> For MVP: if the process crashes, restart with `orc resume`. Full recovery is a nice-to-have.
+### MVP recovery (`orc resume`)
 
-Full recovery boot order — note that coroutines **resubscribe to Redis Streams before** the outbox is drained. This is required because the outbox may publish to streams; consumers must be ready first. Redis Streams are durable so no messages are lost between drain and subscribe.
+Best-effort continuation from persisted SQLite state. No Redis involved.
 
-1. Open SQLite, run migrations
-2. Connect Redis, verify reachable
-3. Load entities from projections → reconstruct dependency tree
-4. Classify: `done/failed` → skip | `running/retrying` → resume | `pending` → check parent
-5. Reconcile worktrees via **completion marker** (`.orc-done.json` in worktree root, written by runner on exit):
-   - Marker `status: done` → emit `WorkerDone`
+1. Open SQLite, run migrations if needed
+2. Load orchestration state from projections → reconstruct entity tree in memory
+3. Reconcile worktrees via **completion marker** (`.orc-done.json` in worktree root):
+   - Marker `status: done` → emit `WorkerDone`, mark complete
    - Marker `status: failed` → treat as `WorkerFailed`, apply retry logic
-   - No marker + uncommitted changes → Codex mid-run, re-spawn to continue
-   - No marker + clean → re-spawn from scratch
+   - No marker + uncommitted changes → Codex was mid-run, re-spawn to continue
+   - No marker + clean worktree → re-spawn from scratch
    - Worktree missing → re-create branch + worktree, re-spawn
-6. **Re-instantiate live coroutines + resubscribe to Redis Streams** (with last-read cursor from projection)
-7. Drain outbox — safe now, consumers are ready
-8. Repopulate Redis broadcast for dashboard
-9. Start dashboard + WebSocket
-10. Ready — orchestration continues
+4. Mark in-flight workers as resumable / failed / retryable based on reconciliation
+5. Restart in-process orchestration coroutines (Mastermind, Leads, active Workers)
+6. Restart dashboard + WebSocket server
+7. Continue from persisted state
 
-**Why completion marker, not "has commits":** a branch can have commits and still be incomplete, wrong, or semantically failed. `.orc-done.json` is the only reliable terminal signal from the runner.
+**Why completion marker, not "has commits":** a branch can have commits and still be incomplete, wrong, or semantically failed. `.orc-done.json` is the only reliable terminal signal.
+
+### Post-MVP distributed recovery
+
+Same as above, plus:
+- Connect Redis, verify reachable
+- Re-instantiate coroutines and resubscribe to Redis Streams with last-read cursor from projection
+- Drain outbox — safe now, consumers are ready
+- Repopulate Redis broadcast for dashboard
 
 ---
 
@@ -379,13 +384,15 @@ On `LeadFailed`: spawn fresh Lead team, mark section optional and continue, or e
 - `buildReviewerCtx(leadId)` — all worker diffs → reviewer prompt
 
 **Reviewer framing:** the reviewer is an **MVP arbitration layer**, not a universal evaluation truth source. It works well when outputs are independently valid, comparable, and diffable (Strudel patterns, isolated feature files, small scoped tasks). It is weaker for refactors, cross-cutting changes, or tasks where "best diff" ≠ "correct integration." Post-MVP signals to augment or replace it: lint/typecheck pass, test results, execution-based scoring, human approval weighting.
-- `routeDirective(text)` — NL directive → target entity + command type [**MVP**]
+- `routeDirective(text)` — NL directive → target entity + command type [**MVP if time permits** — dashboard action buttons are the primary steering path; NL routing is sugar on top]
 
 **Cross-lead context** (sibling lead summaries in each lead's context) → [nice-to-have]
 
-### User Steering [MVP]
+### User Steering
 
-User sends natural language directives via the dashboard top bar. `routeDirective()` parses intent and routes as a typed `CommandIssued` event to the appropriate entity's in-process queue. All steering is journaled to `event_log`.
+**Primary steering path [MVP]:** dashboard action buttons — Approve, Drop, Compare, Preview. These are sufficient to prove human-in-the-loop and are the required MVP controls.
+
+**Natural language steering [MVP if time permits]:** `routeDirective()` parses NL directives from the dashboard top bar and routes as a typed `CommandIssued` event to the appropriate entity's in-process queue. All steering is journaled to `event_log`. Downgrade this if time is tight — the explicit buttons are enough for the demo.
 
 | Directive | Routes to | Command |
 |---|---|---|
@@ -561,8 +568,8 @@ docs/superpowers/specs/
 # MVP
 orc run "build a lo-fi track"   # decompose → spawn leads → workers → review → merge
 orc status                       # print current orchestration state from SQLite
-orc resume                       # MVP: restarts the process and picks up live state from SQLite
-                                 # full robust crash recovery (worktree reconciliation etc.) is post-MVP
+orc resume                       # MVP: restarts the process and attempts best-effort continuation
+                                 # from persisted SQLite state (see §7 for what this covers)
 
 # nice-to-have
 orc steer "make bass darker"
@@ -580,19 +587,20 @@ orc dashboard
 3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
 4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
 5. **All cross-role interactions are journaled events** — no direct worker-to-worker calls. Core event types go into event_log; dashboard reads the same history. Do not over-formalize: event structure serves current-state visibility, logs, retries, reviewer verdict, merge flow, and dashboard rendering — nothing more in MVP.
-18. **Merge target is `run/<id>`, not `main`** — section winners merge into a run branch. Only at orchestration end does the Mastermind fast-forward `run/<id>` → `main`. Prevents integration weirdness during parallel section execution.
-6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
-7. **Worker commands always via Lead** — no entity is addressed directly from outside its parent. Steering routes to Lead; Lead forwards to worker via in-process queue.
-8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
-9. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
-10. **Watchdog is MVP** — 5-second polling loop feeds live health state to dashboard. Health taxonomy `queued|running|stalled|zombie|done|failed` is meaningful from day one.
-11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
-12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
-13. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
-14. **Merge coordinator + AI merge-fix worker** — merges serialized FIFO. On conflict, Mastermind spawns a merge-fix worker (Codex gets conflict files + acceptance goal). User only gets A/B/C product-level decision if automated repair fails. User never touches code.
-15. **PM agent always runs as LLM call (Option B)** — even for template-driven runs, the PM agent makes a real LLM call to render `prompt_hint` variables into a rich, context-aware worker prompt. Adds latency per section but produces higher-quality prompts than string interpolation alone.
-16. **Git branch naming is fixed** — `feat/{section-id}-v{n}` for initial workers, `feat/{section-id}-v{n}-r{retry}` for retries. Maps 1:1 to worktree paths.
-17. **WebSocket server lives in `apps/api`** — Next.js API routes are never used for WebSocket. The dashboard connects as a plain browser WebSocket client to `api:4000`.
+6. **Merge target is `run/<id>`, not `main`** — section winners merge into a run branch. Only at orchestration end does the Mastermind fast-forward `run/<id>` → `main`. Prevents integration weirdness during parallel section execution.
+7. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
+8. **Worker commands always via Lead** — no entity is addressed directly from outside its parent. Steering routes to Lead; Lead forwards to worker via in-process queue.
+9. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
+10. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
+11. **Watchdog is MVP** — 5-second polling loop feeds live health state to dashboard. Health taxonomy `queued|running|stalled|zombie|done|failed` is meaningful from day one.
+12. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
+13. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
+14. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
+15. **Merge coordinator + AI merge-fix worker** — merges serialized FIFO onto `run/<id>`. On conflict, Mastermind spawns a merge-fix worker producing `repair/<merge-id>-v{n}`. User only gets A/B/C product-level decision if automated repair fails. User never touches code.
+16. **PM agent always runs as LLM call (Option B)** — even for template-driven runs, the PM agent makes a real LLM call to render `prompt_hint` into a rich, context-aware worker prompt.
+17. **Git branch naming is fixed** — `feat/{section-id}-v{n}` for initial workers, `feat/{section-id}-v{n}-r{retry}` for retries, `repair/<merge-id>-v{n}` for merge-fix workers.
+18. **WebSocket server lives in `apps/api`** — Next.js API routes are never used for WebSocket. The dashboard connects as a plain browser WebSocket client to `api:4000`.
+19. **Dashboard buttons are primary steering [MVP]; NL routing is secondary [MVP if time permits]** — Approve, Drop, Compare, Preview are sufficient to prove human-in-the-loop. `routeDirective()` is sugar; downgrade it if time is tight.
 
 ---
 
@@ -732,11 +740,12 @@ Merge-fix worker receives:
   - conflict files + raw git merge output
   - explicit acceptance criteria ("produce a valid, runnable merged result")
   → Codex edits conflicted files in a fresh repair worktree
+  → repair branch named: repair/<merge-id>-v{attempt}  (e.g. repair/abc123-v1)
   → runs lint / tests / build / preview check
-  → if valid, repair branch becomes the merge result candidate
-  → emits MergeResolved
+  → emits MergeResolved { mergeId, repairBranch: "repair/abc123-v1", summary, checksPassed }
         ↓
-Coordinator retries merge with repaired branch applied
+Coordinator merges repair/<merge-id>-v{n} into run/<orchestration-id>
+  (artifact lineage: original winner → conflict → repair branch → run branch)
         ↓
 If merge-fix worker fails repeatedly (maxMergeRetries) →
   Mastermind surfaces high-level decision to user in dashboard:
@@ -775,7 +784,7 @@ CREATE TABLE merge_queue (
   winner_worktree_id TEXT    NOT NULL,
   target_branch      TEXT    NOT NULL,  -- run/<orchestration-id>
   status             TEXT    NOT NULL DEFAULT 'pending',
-                             -- pending|merging|done|conflict|fixing|failed
+                             -- pending|merging|done|conflict|fixing|retrying|failed
   conflict_details   JSON,
   fix_worker_id      TEXT,   -- entity_id of the merge-fix worker, if spawned
   fix_attempts       INTEGER NOT NULL DEFAULT 0,
