@@ -1,0 +1,178 @@
+import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
+import type { Db } from '../db/client'
+import { writeEvent, nextSeq } from '../db/journal'
+import { upsertTask } from '../db/queries'
+import { createRunPlan } from '../git/planFiles'
+import { ConcurrencyGovernor, configureGovernor } from './concurrency'
+import { LeadStateMachine } from './lead'
+import { MergeCoordinator } from './mergeCoordinator'
+import { mergeBranch, createBranch } from '../git/worktree'
+import { CommandQueue } from '../events/commandQueues'
+import { ContextManager } from './context'
+import type { WorkerAgent } from '../agents/types'
+import type { OrcEvent, OrcCommand } from '@orc/types'
+
+interface SectionPlan { id: string; goal: string; numWorkers: number; dependsOn: string[] }
+
+interface MastermindConfig {
+  repoRoot:    string
+  db:          Db
+  governor:    ConcurrencyGovernor
+  runId:       string
+  agentFactory: () => WorkerAgent
+  llmCall:     (prompt: string) => Promise<string>
+  leadQueues?: Map<string, CommandQueue<OrcCommand>>
+  doMerge?:    (targetBranch: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
+  templatePath?: string
+  maxConcurrentWorkers?: number
+}
+
+export type MastermindState = 'idle'|'planning'|'delegating'|'monitoring'|'merging'|'done'|'failed'
+
+export class MastermindStateMachine {
+  state: MastermindState = 'idle'
+  private ctx: ContextManager
+
+  constructor(private readonly cfg: MastermindConfig) {
+    this.ctx = new ContextManager(cfg.repoRoot)
+  }
+
+  private emit(eventType: string, payload: Record<string, unknown>): void {
+    const event: OrcEvent = {
+      entityId: 'mastermind', entityType: 'mastermind',
+      eventType: eventType as any, sequence: nextSeq('mastermind'), ts: Date.now(), payload,
+    }
+    writeEvent(this.cfg.db, event, () => {
+      upsertTask(this.cfg.db, 'mastermind', 'mastermind', null, this.state)
+    })
+  }
+
+  async run(opts: { userGoal: string }): Promise<{ status: 'done'|'failed' }> {
+    if (this.cfg.maxConcurrentWorkers) configureGovernor(this.cfg.maxConcurrentWorkers)
+
+    this.state = 'planning'
+    this.emit('CommandIssued', { from: 'user', to: 'mastermind', commandType: 'Run', commandPayload: { goal: opts.userGoal } })
+
+    const runDir = path.join(this.cfg.repoRoot, '.orc', 'runs', this.cfg.runId)
+    await fs.mkdir(path.join(runDir, 'leads'), { recursive: true })
+
+    let sections: SectionPlan[]
+    try {
+      const prompt = await this.ctx.buildMastermindPrompt(opts.userGoal, this.cfg.runId)
+      const raw = await this.cfg.llmCall(prompt)
+      const parsed = JSON.parse(raw)
+      sections = Array.isArray(parsed) ? parsed.map(s => ({ ...s, dependsOn: s.dependsOn ?? s.depends_on ?? [] })) : [{ id: 'main', goal: opts.userGoal, numWorkers: 2, dependsOn: [] }]
+    } catch {
+      sections = [{ id: 'main', goal: opts.userGoal, numWorkers: 2, dependsOn: [] }]
+    }
+
+    const runPlanPath = await createRunPlan(this.cfg.repoRoot, this.cfg.runId, {
+      userGoal: opts.userGoal, sections: sections.map(s => s.id),
+    }).catch(() => '')
+
+    const runBranch = `run/${this.cfg.runId}`
+    await createBranch(this.cfg.repoRoot, runBranch).catch(err => {
+      if (!err.message?.includes('already exists')) throw err
+    })
+
+    this.emit('PlanReady', { sections: sections.map(s => s.id), runId: this.cfg.runId })
+    this.state = 'delegating'
+
+    const sectionResults = new Map<string, { status: 'done'|'failed'; winnerBranch: string }>()
+    const resolved = new Set<string>()
+    const failed = new Set<string>()
+    const remaining = [...sections]
+
+    while (remaining.length > 0) {
+      const batch = remaining.filter(s => s.dependsOn.every(d => resolved.has(d)))
+
+      if (batch.length === 0) {
+        const blockedByFailure = remaining.filter(s => s.dependsOn.some(d => failed.has(d)))
+        if (blockedByFailure.length > 0) {
+          for (const s of blockedByFailure) {
+            sectionResults.set(s.id, { status: 'failed', winnerBranch: '' })
+            failed.add(s.id)
+            remaining.splice(remaining.indexOf(s), 1)
+          }
+          continue
+        }
+        this.state = 'failed'
+        this.emit('OrchestrationFailed', { reason: 'circular or unresolvable section dependencies' })
+        return { status: 'failed' }
+      }
+
+      batch.forEach(s => remaining.splice(remaining.indexOf(s), 1))
+
+      const batchResults = await Promise.allSettled(
+        batch.map(section => {
+          this.emit('LeadDelegated', { leadId: `${section.id}-lead`, sectionId: section.id })
+          const leadId = `${section.id}-lead`
+          const leadCommandQueue = new CommandQueue<OrcCommand>()
+          this.cfg.leadQueues?.set(leadId, leadCommandQueue)
+          const lead = new LeadStateMachine({
+            id: leadId, sectionId: section.id, sectionGoal: section.goal,
+            numWorkers: section.numWorkers, baseBranch: 'main',
+            runBranch: `run/${this.cfg.runId}`, runId: this.cfg.runId,
+            repoRoot: this.cfg.repoRoot, db: this.cfg.db, governor: this.cfg.governor,
+            agentFactory: this.cfg.agentFactory, llmCall: this.cfg.llmCall,
+            commandQueue: leadCommandQueue, runPlanPath,
+          })
+          return lead.run().then(r => ({ section, result: r }))
+        })
+      )
+
+      for (const r of batchResults) {
+        if (r.status === 'fulfilled') {
+          const { section, result } = r.value
+          sectionResults.set(section.id, { status: result.status, winnerBranch: result.winnerBranch })
+          if (result.status === 'done') { resolved.add(section.id) }
+          else { failed.add(section.id) }
+        } else {
+          const section = batch[batchResults.indexOf(r)]
+          if (section) failed.add(section.id)
+        }
+      }
+    }
+
+    this.state = 'monitoring'
+    const failures = [...sectionResults.values()].filter(r => r.status === 'failed')
+    if (failures.length > 0) {
+      this.state = 'failed'
+      this.emit('OrchestrationFailed', { reason: `${failures.length} section(s) failed` })
+      return { status: 'failed' }
+    }
+
+    this.state = 'merging'
+    const doMerge = this.cfg.doMerge ?? ((target, source) => mergeBranch(this.cfg.repoRoot, target, source))
+    const mergeConflicts: string[] = []
+    const mc = new MergeCoordinator({
+      db: this.cfg.db, repoRoot: this.cfg.repoRoot, doMerge,
+      onConflict: (id) => { mergeConflicts.push(id) },
+      onFailed: (_id, reason) => { this.emit('OrchestrationFailed', { reason: `merge failed: ${reason}` }) },
+    })
+
+    for (const [sectionId, result] of sectionResults) {
+      if (result.status === 'done' && result.winnerBranch) {
+        mc.enqueue({
+          leadId: `${sectionId}-lead`,
+          worktreeId: result.winnerBranch.replace('feat/', ''),
+          winnerBranch: result.winnerBranch,
+          targetBranch: `run/${this.cfg.runId}`,
+        })
+      }
+    }
+
+    await mc.drainQueue()
+
+    if (mergeConflicts.length > 0) {
+      this.state = 'failed'
+      this.emit('OrchestrationFailed', { reason: `${mergeConflicts.length} merge conflict(s) unresolved` })
+      return { status: 'failed' }
+    }
+
+    this.state = 'done'
+    this.emit('OrchestrationComplete', { runBranch: `run/${this.cfg.runId}` })
+    return { status: 'done' }
+  }
+}
