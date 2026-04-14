@@ -59,7 +59,7 @@ export OPENAI_API_KEY=sk-...
 
 # Optional — defaults to OpenAI
 export OPENAI_BASE_URL=https://api.openai.com/v1
-export OPENAI_MODEL=gpt-4o
+export OPENAI_MODEL=gpt-5.4
 
 # Optional — defaults shown
 export ORC_DB_PATH=./orc.db          # SQLite database file
