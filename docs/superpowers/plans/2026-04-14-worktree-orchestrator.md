@@ -1513,9 +1513,10 @@ import { nextSeq } from '../db/journal'
 import { createLeadPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
 import { WorkerStateMachine } from './worker'
+import { CommandQueue } from '../events/commandQueues'
 import type { WorkerAgent } from '../agents/types'
 import { ContextManager } from './context'
-import type { OrcEvent } from '@orc/types'
+import type { OrcEvent, OrcCommand } from '@orc/types'
 
 export type LeadState = 'idle'|'planning'|'running'|'reviewing'|'merging'|'done'|'failed'
 
@@ -1534,6 +1535,7 @@ interface LeadConfig {
   governor:     ConcurrencyGovernor
   agentFactory: () => WorkerAgent
   llmCall:      (prompt: string) => Promise<string>
+  commandQueue: CommandQueue<OrcCommand>  // owned by this lead, registered with server routes
   runPlanPath?: string
   maxRetries?:  number
 }
@@ -1597,9 +1599,32 @@ export class LeadStateMachine {
       runPlanPath:  this.cfg.runPlanPath,
     }))
 
-    const results = await Promise.allSettled(
-      workers.map((w, i) => w.run({ id: w.id, prompt: workerPrompts[i], maxRetries: this.cfg.maxRetries ?? 1, errorHistory: [] }))
+    // Process incoming commands (ForceApprove / Abort) while workers run.
+    // Drain the queue non-blockingly between worker completions.
+    const workerPromises = workers.map((w, i) =>
+      w.run({ id: w.id, prompt: workerPrompts[i], maxRetries: this.cfg.maxRetries ?? 1, errorHistory: [] })
     )
+
+    // Command loop: runs alongside workers, processes any queued ForceApprove or Abort
+    let forceWinnerId: string | undefined
+    const drainCommands = () => {
+      while (this.cfg.commandQueue.size > 0) {
+        this.cfg.commandQueue.dequeue().then(cmd => {
+          if (cmd.commandType === 'ForceApprove') {
+            forceWinnerId = cmd.winnerId
+          } else if (cmd.commandType === 'Abort') {
+            const target = cmd.targetWorkerId
+            const w = workers.find(x => x.id === target)
+            if (w) w.abort()
+          }
+        })
+      }
+    }
+    const commandPollInterval = setInterval(drainCommands, 500)
+
+    const results = await Promise.allSettled(workerPromises)
+    clearInterval(commandPollInterval)
+    drainCommands()   // final drain after workers complete
 
     const done = results
       .map((r, i) => ({ r, id: workers[i].id, branch: workers[i].branch }))
@@ -1612,16 +1637,21 @@ export class LeadStateMachine {
       return { status: 'failed', winnerBranch: '', reasoning: 'all workers failed' }
     }
 
-    // Reviewer
+    // Reviewer — skip LLM if user already sent ForceApprove via command queue
     this.state = 'reviewing'
-    const reviewPrompt = this.ctx.buildReviewerPrompt(this.cfg.sectionGoal, done)
     let winnerId = done[0].workerId
     let reasoning = 'first available'
-    try {
-      const raw = await this.cfg.llmCall(reviewPrompt)
-      const rev = JSON.parse(raw)
-      if (rev.winnerId) { winnerId = rev.winnerId; reasoning = rev.reasoning }
-    } catch { /* keep fallback */ }
+    if (forceWinnerId && done.some(d => d.workerId === forceWinnerId)) {
+      winnerId = forceWinnerId
+      reasoning = 'force-approved by user'
+    } else {
+      const reviewPrompt = this.ctx.buildReviewerPrompt(this.cfg.sectionGoal, done)
+      try {
+        const raw = await this.cfg.llmCall(reviewPrompt)
+        const rev = JSON.parse(raw)
+        if (rev.winnerId) { winnerId = rev.winnerId; reasoning = rev.reasoning }
+      } catch { /* keep fallback */ }
+    }
 
     const winner = done.find(d => d.workerId === winnerId) ?? done[0]
     this.emit('ReviewComplete', { winnerId: winner.workerId, reasoning })
@@ -1762,9 +1792,10 @@ import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
 import { MergeCoordinator } from './mergeCoordinator'
 import { mergeBranch } from '../git/worktree'
+import { CommandQueue } from '../events/commandQueues'
 import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
-import type { OrcEvent } from '@orc/types'
+import type { OrcEvent, OrcCommand } from '@orc/types'
 
 interface SectionPlan { id: string; goal: string; numWorkers: number; dependsOn: string[] }
 
@@ -1775,6 +1806,7 @@ interface MastermindConfig {
   runId:       string
   agentFactory: () => WorkerAgent
   llmCall:     (prompt: string) => Promise<string>
+  leadQueues?: Map<string, CommandQueue<OrcCommand>>  // optional: server registers these for dashboard routing
   doMerge?:    (targetBranch: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
   templatePath?: string
   maxConcurrentWorkers?: number
@@ -1862,19 +1894,24 @@ export class MastermindStateMachine {
       const batchResults = await Promise.allSettled(
         batch.map(section => {
           this.emit('LeadDelegated', { leadId: `${section.id}-lead`, sectionId: section.id })
+          // Create and register command queue for this lead (enables dashboard approve/drop)
+          const leadId = `${section.id}-lead`
+          const leadCommandQueue = new CommandQueue<OrcCommand>()
+          this.cfg.leadQueues?.set(leadId, leadCommandQueue)
           const lead = new LeadStateMachine({
-            id:          `${section.id}-lead`,
-            sectionId:   section.id,
-            sectionGoal: section.goal,
-            numWorkers:  section.numWorkers,
-            baseBranch:  'main',
-            runBranch:   `run/${this.cfg.runId}`,
-            runId:       this.cfg.runId,
-            repoRoot:    this.cfg.repoRoot,
-            db:          this.cfg.db,
-            governor:    this.cfg.governor,
+            id:           leadId,
+            sectionId:    section.id,
+            sectionGoal:  section.goal,
+            numWorkers:   section.numWorkers,
+            baseBranch:   'main',
+            runBranch:    `run/${this.cfg.runId}`,
+            runId:        this.cfg.runId,
+            repoRoot:     this.cfg.repoRoot,
+            db:           this.cfg.db,
+            governor:     this.cfg.governor,
             agentFactory: this.cfg.agentFactory,
-            llmCall:     this.cfg.llmCall,
+            llmCall:      this.cfg.llmCall,
+            commandQueue: leadCommandQueue,
             runPlanPath,
           })
           return lead.run().then(r => ({ section, result: r }))
@@ -1936,10 +1973,12 @@ export class MastermindStateMachine {
 
     await mc.drainQueue()
 
+    // [POST-DEMO] merge-fix worker: auto-repair conflicts then retry.
+    // For MVP: any unresolved conflict fails the orchestration.
     if (mergeConflicts.length > 0) {
-      // [DEGRADED] Conflicts surfaced via MergeConflict events; no auto-repair
-      // For MVP: conflicts are visible in dashboard; user must handle externally
-      // [POST-DEMO] spawn merge-fix worker per conflict
+      this.state = 'failed'
+      this.emit('OrchestrationFailed', { reason: `${mergeConflicts.length} merge conflict(s) unresolved: ${mergeConflicts.join(', ')}` })
+      return { status: 'failed' }
     }
 
     this.state = 'done'
@@ -2526,9 +2565,9 @@ describe('routes', () => {
   it('POST /api/approve enqueues ForceApprove to lead queue', async () => {
     const db = createTestDb()
     const leadQ = new CommandQueue<any>()
-    const leadQueues = new Map([['rhythm-lead', leadQ]])
+    const leadQueues = new Map([['drums-lead', leadQ]])
     const app = createApp({ db, leadQueues })
-    const res = await request(app).post('/api/approve').send({ workerId: 'rhythm-v1', leadId: 'rhythm-lead' })
+    const res = await request(app).post('/api/approve').send({ workerId: 'drums-v1', leadId: 'drums-lead' })
     expect(res.status).toBe(202)
     expect(leadQ.size).toBe(1)
   })
@@ -2620,11 +2659,14 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     res.status(202).json({ ok: true })
   })
 
-  // Preview: generate Strudel URL [DEGRADED — no generic local server]
+  // Preview: derive worktreePath from projection — client only sends worktreeId
   r.post('/preview/launch', async (req, res) => {
-    const { worktreeId, worktreePath } = req.body
-    if (!worktreeId || !worktreePath) { res.status(400).json({ error: 'worktreeId and worktreePath required' }); return }
-    const url = await launchPreview(db, worktreeId, worktreePath)
+    const { worktreeId } = req.body
+    if (!worktreeId) { res.status(400).json({ error: 'worktreeId required' }); return }
+    const wts = getWorktrees(db)
+    const wt = wts.find(x => x.workerId === worktreeId)
+    if (!wt) { res.status(404).json({ error: `worktree not found for worker ${worktreeId}` }); return }
+    const url = await launchPreview(db, worktreeId, wt.path)
     res.status(202).json({ previewUrl: url })
   })
 
