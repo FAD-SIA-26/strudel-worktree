@@ -24,7 +24,8 @@ Reviewer (pick best diff, explain why)
 Merge coordinator + AI merge-fix worker
 Preview launcher — one-click per worktree
 Web dashboard — live tree, event stream
-Steer / approve / drop / compare / preview
+Approve / drop / compare / preview (action buttons — MVP)
+NL steering via routeDirective (stretch — MVP if time permits)
 ```
 
 **Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → user watches live in dashboard → reviewer picks the best output → winning branch merges into the orchestration run branch → once all sections are integrated, the run branch is fast-forwarded to main. That is a complete, winning demo.
@@ -60,7 +61,8 @@ Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 |---|---|---|---|
 | `event_log` | SQLite (append-only) | Durable truth — what happened | MVP |
 | `projections` | SQLite (mutable tables) | Current read state — what is | MVP |
-| `event_bus` | In-memory (Express process) | Live fanout to WebSocket clients | MVP |
+| `command_queues` | In-memory per-role (Express process) | Command transport — Mastermind→Lead→Worker | MVP |
+| `event_bus` | In-memory publish-only (Express process) | State change fanout to WebSocket clients | MVP |
 | `outbox` | SQLite (pending queue) | Pending cross-boundary side effects | nice-to-have |
 | Code truth | git worktrees | What was built | MVP |
 | Redis | Redis Streams | Rebuildable live coordination | nice-to-have |
@@ -103,8 +105,8 @@ Mastermind
 
 **OrchestrationFailed** (transitions Mastermind to `failed`) when ANY of:
 - A non-optional task reaches `status = 'failed'` with `maxRetries` exhausted and no recovery path
-- A `merge_queue` entry reaches `status = 'failed'` for a non-optional section (merge-fix worker exhausted all retries)
-- A `merge_queue` entry is stuck in `conflict` and the user chose to fail the orchestration at the high-level decision prompt
+- A `merge_queue` entry reaches `status = 'failed'` for a non-optional section — whether from a non-conflict git error or from exhausted merge-fix retries — and Mastermind has no recovery path (no remaining candidate, section not marked optional)
+- A `merge_queue` entry is stuck in `conflict` and the user chose option C (fail the orchestration) at the high-level decision prompt
 
 ### SectionLead states [MVP]
 `idle → planning → running → reviewing → merging → done | failed | escalated`
@@ -194,12 +196,11 @@ All handlers check "already running / already done" before acting.
 
 ## 5. Event Bus, WebSocket & Orchestration Tracing [MVP]
 
-### In-memory event bus
+### Two in-memory transports — separate responsibilities
 
-The Express process maintains a single `EventEmitter` instance (the event bus). Every state transition:
-1. Writes to `event_log` + updates projection (SQLite transaction)
-2. Emits the same event to the in-memory bus
-3. The WebSocket handler broadcasts it to all connected dashboard clients
+**Command queues (transport):** each role (Mastermind, each Lead, each Worker) owns its own in-memory async queue. Commands flow strictly downward: Mastermind enqueues commands for Leads, Leads enqueue commands for Workers. The command queue is for delivery only — it has no observational role and does not fanout to the dashboard.
+
+**Event bus (observability):** a single publish-only `EventEmitter`. Every state transition publishes to it after writing to SQLite. The WebSocket handler subscribes and broadcasts to all connected dashboard clients. The event bus is never used to deliver commands — it is a one-way broadcast channel.
 
 ```typescript
 // Every state transition follows this pattern:
@@ -207,10 +208,13 @@ db.transaction(() => {
   appendToEventLog(event)
   updateProjection(event)
 })
-eventBus.emit('orchestration:event', event)  // → WebSocket → browser
+eventBus.publish(event)  // → WebSocket → browser (observability only)
+
+// Commands are delivered separately via per-role queues:
+leadQueue.enqueue(command)  // transport only, not observed
 ```
 
-All cross-role coordination (Mastermind → Lead → Worker) uses **in-process async queues** backed by the same event bus. No Redis needed.
+No Redis needed for MVP. The two channels have different semantics and must not be conflated.
 
 ### Dashboard reconnect
 
@@ -822,7 +826,7 @@ CREATE TABLE merge_queue (
 - On conflict: coordinator pauses, Mastermind spawns a merge-fix worker. Other pending merges stay queued.
 - `conflict → fixing → retrying` is fully automated. User is not involved unless `maxMergeRetries` is exhausted.
 - On unrecoverable failure: Mastermind surfaces A/B/C choice to user (no code interaction).
-- On non-conflict git error (e.g. missing branch): mark `failed`, notify Mastermind, continue queue.
+- On non-conflict git error (e.g. missing branch): mark entry `failed`, notify Mastermind, continue processing remaining queue entries. Mastermind then applies the same terminal logic as §3 — if the section is non-optional and no recovery path exists, OrchestrationFailed is emitted. The coordinator does not decide terminal state; Mastermind does.
 
 ---
 
