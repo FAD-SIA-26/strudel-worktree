@@ -834,7 +834,7 @@ Each orchestration level persists a markdown planning artifact used for context 
 
 **Plan files vs plan skills:**
 - `skills/run-planner.md`, `skills/lead-planner.md`, `skills/worker-planner.md` — agent skills that teach each agent *how* to produce its plan (format, sections, what to include, update discipline). These live in `skills/` alongside all other agent behavior files.
-- `.orc/runs/<run-id>/run-plan.md`, `leads/<section>.md`, `.orc/worker-plan.md` — the actual plan instances produced by agents at runtime. These live in the repo/worktrees.
+- `.orc/runs/<run-id>/run-plan.md`, `.orc/runs/<run-id>/leads/<section-id>.md`, `.worktrees/<worker-id>/.orc/worker-plan.md` — the actual plan instances produced by agents at runtime. These live in the repo/worktrees.
 - `templates/strudel-track.toml` — workflow decomposition data (sections, dependencies, params). This is orchestration config, not an agent skill.
 
 ### Ownership and level
@@ -991,8 +991,8 @@ Plans are not freeform diaries. Each level has bounded update points:
 ### Context flow on retry
 
 When a worker retries, the new worker receives:
-1. The failed worker's `worker-plan.md` (what was attempted, what blocked it)
-2. The failed worker's `session.jsonl` summary (what Codex actually did)
+1. The failed worker's `.orc/worker-plan.md` (what was attempted, what blocked it)
+2. The failed worker's `.orc-session.jsonl` summary (what Codex actually did)
 3. The lead plan (section constraints and acceptance criteria)
 4. A new `worker-plan.md` pre-filled with inherited context + new strategy
 
