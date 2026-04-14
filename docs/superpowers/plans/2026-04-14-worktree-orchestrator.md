@@ -3087,7 +3087,7 @@ export function EventStream() {
 }
 ```
 
-- [ ] **Step 4: DetailPanel (Plan/Logs/Diff/Preview — working Approve + Drop)**
+- [ ] **Step 4: DetailPanel — Compare+Approve for leads, Plan/Logs/Preview for workers**
 
 ```tsx
 // apps/web/src/components/DetailPanel.tsx
@@ -3098,10 +3098,10 @@ import type { SectionInfo, WorkerInfo } from '@orc/types'
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
 export function DetailPanel({ selectedId, sections }: { selectedId: string | null; sections: SectionInfo[] }) {
+  const isLead = selectedId?.endsWith('-lead') ?? false
   const [tab, setTab] = useState<'compare'|'plan'|'logs'|'preview'>(isLead ? 'compare' : 'plan')
   if (!selectedId) return <div className="flex items-center justify-center h-full text-gray-600 text-sm">Select an entity from the tree</div>
 
-  const isLead = selectedId.endsWith('-lead')
   const sectionId = selectedId.replace('-lead', '')
   const section = sections.find(s => s.id === sectionId)
   const worker: WorkerInfo | undefined = sections.flatMap(s => s.workers).find(w => w.id === selectedId)
@@ -3398,7 +3398,7 @@ git commit -m "test: integration smoke test — 2 sections with depends_on, Mock
 | §10 ContextManager | Task 9 |
 | §10 Steering: Approve/Drop buttons (real command enqueue) | Task 13 + 16 |
 | §11 Skills files (8 files) | Task 12 |
-| §12 Dashboard — Tree, Detail (Plan/Logs/Preview), Events | Task 15-16 |
+| §12 Dashboard — Tree, Detail (Compare+Approve for leads / Plan+Logs+Preview for workers), Events | Task 15-16 |
 | §12 Preview — Strudel URL [DEGRADED] | Task 12 preview.ts |
 | §13 Monorepo layout (Turborepo, src/) | Task 1 |
 | §14 CLI (orc run/status/resume) | Task 14 |
