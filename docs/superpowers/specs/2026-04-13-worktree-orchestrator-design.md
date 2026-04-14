@@ -262,7 +262,7 @@ Best-effort continuation from persisted SQLite state. No Redis involved.
 
 1. Open SQLite, run migrations if needed
 2. Load orchestration state from projections → reconstruct entity tree in memory
-3. Reconcile worktrees via **completion marker** (`.orc-done.json` in worktree root):
+3. Reconcile worktrees via **completion marker** (`.orc/.orc-done.json` inside the worktree):
    - Marker `status: done` → emit `WorkerDone`, mark complete
    - Marker `status: failed` → treat as `WorkerFailed`, apply retry logic
    - No marker + uncommitted changes → treat as interrupted in-progress work; re-spawn with existing worktree state and prior session context
@@ -273,7 +273,7 @@ Best-effort continuation from persisted SQLite state. No Redis involved.
 6. Restart dashboard + WebSocket server
 7. Continue from persisted state
 
-**Why completion marker, not "has commits":** a branch can have commits and still be incomplete, wrong, or semantically failed. `.orc-done.json` is the only reliable terminal signal.
+**Why completion marker, not "has commits":** a branch can have commits and still be incomplete, wrong, or semantically failed. `.orc/.orc-done.json` is the only reliable terminal signal.
 
 ### Post-MVP distributed recovery
 
@@ -321,11 +321,11 @@ interface WorkerResult {
 ```
 
 **MVP implementation:** `CodexCLIAdapter` — spawns `codex` as a child process in `ctx.worktreePath`, streams stdout to `WorkerProgress` events. On exit:
-1. Writes `.orc-done.json` to the worktree root: `{ status, exitCode, ts }`
-2. Writes `.orc-session.jsonl` alongside it: one JSON line per structured output chunk from Codex
+1. Writes `.orc/.orc-done.json` inside the worktree: `{ status, exitCode, ts }`
+2. Writes `.orc/.orc-session.jsonl` alongside it: one JSON line per structured output chunk from Codex
 
 **Session event log [MVP — implementation is cheap]:**
-`.orc-session.jsonl` captures the full structured output of the Codex run. On retry or resume, `ContextManager` reads this file, summarises the prior session (last N lines or a brief LLM summary), and prepends it to the new worker's prompt:
+`.orc/.orc-session.jsonl` captures the full structured output of the Codex run. On retry or resume, `ContextManager` reads this file, summarises the prior session (last N lines or a brief LLM summary), and prepends it to the new worker's prompt:
 
 ```
 Prior attempt summary: Codex got as far as creating the bass pattern file
@@ -715,7 +715,7 @@ The watchdog is a background loop that monitors all workers in `running` or `spa
 |---|---|---|
 | stdout inactivity | time since last `WorkerProgress` event in SQLite | `stalled` if > threshold (default 60s) |
 | process liveness | `kill -0 <pid>` on the pid in `runs` projection | `zombie` if process dead + no `.orc-done.json` |
-| completion marker | read `.orc-done.json` from worktree path | `done` or `failed` if marker present |
+| completion marker | read `.orc/.orc-done.json` from inside worktree | `done` or `failed` if marker present |
 
 ### Emitted events
 
