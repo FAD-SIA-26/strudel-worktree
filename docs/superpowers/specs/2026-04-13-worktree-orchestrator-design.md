@@ -671,7 +671,7 @@ workers     = 3
 prompt_hint = """
 Write a Strudel lead melody over the rhythm and harmony.
 Rhythm: {rhythm.winner_code}
-Harmony: {harmony.winner_diff}
+Harmony: {harmony.winner_code}
 """
 
 [[sections]]
@@ -692,7 +692,7 @@ key   = "Dm"
 ### How the Mastermind uses it
 
 1. If a matching template exists for the goal (by name or auto-detected), load it
-2. PM agent receives `prompt_hint` + rendered params + prior section `winner_diff` as context → makes a full LLM call → outputs a rich, context-aware worker prompt (Option B — see §15 decision 15)
+2. PM agent receives `prompt_hint` + rendered params + prior section `winner_code` as context → makes a full LLM call → outputs a rich, context-aware worker prompt (Option B — see §15 decision 15)
 3. Respect `depends_on` ordering — sections with unsatisfied deps stay `queued`
 4. Fall back to full LLM decomposition if no template matches
 
@@ -863,8 +863,8 @@ Each orchestration level persists a markdown planning artifact used for context 
   rhythm-v1/
     .orc/
       worker-plan.md      # Worker owns
-      .orc-session.jsonl  # (existing — Codex output stream, canonical path: .orc/.orc-session.jsonl)
-      .orc-done.json      # (existing — completion marker, canonical path: .orc/.orc-done.json)
+      .orc-session.jsonl  # Codex output stream
+      .orc-done.json      # completion marker
 ```
 
 ### Mastermind plan (`run-plan.md`) — full weight
@@ -923,7 +923,7 @@ TypeScript · Express · Next.js · SQLite · Drizzle · Zod
 - likely: src/instruments/<section>.ts
 
 ## Dependency Inputs
-- rhythm.winner_code: <path or pending>
+- rhythm.winner_code: <value or pending>
 
 ## Worker Variants
 - <section>-v1: <strategy description>
