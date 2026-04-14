@@ -535,7 +535,6 @@ apps/
       events/           # eventBus.ts (in-memory EventEmitter), wsHandler.ts
       git/              # worktree.ts, reconcile.ts
       server/           # Express app, routes, WebSocket handler
-      # redis/          # post-MVP — client.ts, streams.ts, broadcast.ts
       cli.ts            # orc run, orc status, orc resume
     drizzle.config.ts
     package.json
@@ -661,7 +660,7 @@ depends_on  = ["rhythm"]   # waits for rhythm section to complete
 workers     = 2
 prompt_hint = """
 Write a Strudel chord pattern that complements the rhythm section.
-Rhythm section output: {rhythm.winner_diff}
+Rhythm section output: {rhythm.winner_code}
 """
 
 [[sections]]
@@ -671,7 +670,7 @@ depends_on  = ["rhythm", "harmony"]
 workers     = 3
 prompt_hint = """
 Write a Strudel lead melody over the rhythm and harmony.
-Rhythm: {rhythm.winner_diff}
+Rhythm: {rhythm.winner_code}
 Harmony: {harmony.winner_diff}
 """
 
@@ -924,7 +923,7 @@ TypeScript · Express · Next.js · SQLite · Drizzle · Zod
 - likely: src/instruments/<section>.ts
 
 ## Dependency Inputs
-- rhythm.winner_diff: <path or pending>
+- rhythm.winner_code: <path or pending>
 
 ## Worker Variants
 - <section>-v1: <strategy description>
