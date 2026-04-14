@@ -164,7 +164,7 @@ All handlers check "already running / already done" before acting.
 
 ## 5. Redis Coordination [MVP — required by dashboard]
 
-When Redis is added (post-MVP), use **Redis Streams** — not pub/sub — for all `lead:*` channels. Redis Streams are durable: messages persist until consumed and acknowledged, and consumers reconnect with their last-read cursor. This is what makes the boot order safe.
+Use **Redis Streams** — not pub/sub — for all `lead:*` channels. Redis Streams are durable: messages persist until consumed and acknowledged, and consumers reconnect with their last-read cursor. This is what makes the boot order safe.
 
 | Stream | Direction | Purpose |
 |---|---|---|
