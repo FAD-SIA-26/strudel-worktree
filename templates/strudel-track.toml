@@ -1,0 +1,72 @@
+# templates/strudel-track.toml
+[template]
+name = "strudel-track"
+version = "1.1"
+description = "Lo-fi / electronic track — one lead per instrument lane"
+
+[[sections]]
+id = "drums"
+label = "Drums"
+depends_on = []
+workers = 2
+prompt_hint = """
+Write a Strudel.js drum pattern. Output to src/drums.js ONLY.
+Export a single named const: export const drums = <pattern>
+Keep it minimal, loopable, lo-fi. Tempo: {tempo}bpm.
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "bass"
+label = "Bass"
+depends_on = []
+workers = 2
+prompt_hint = """
+Write a Strudel.js bass line. Output to src/bass.js ONLY.
+Export: export const bass = <pattern>
+Key: {key}, Tempo: {tempo}bpm.
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "chords"
+label = "Harmony / Chords"
+depends_on = ["bass"]
+workers = 2
+prompt_hint = """
+Write a Strudel.js chord pattern. Output to src/chords.js ONLY.
+Export: export const chords = <pattern>
+Key: {key}, Tempo: {tempo}bpm.
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "melody"
+label = "Lead Melody"
+depends_on = ["chords"]
+workers = 3
+prompt_hint = """
+Write a Strudel.js lead melody. Output to src/melody.js ONLY.
+Export: export const melody = <pattern>
+Key: {key}, Tempo: {tempo}bpm.
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "arrangement"
+label = "Final Arrangement"
+depends_on = ["drums", "bass", "chords", "melody"]
+workers = 1
+prompt_hint = """
+Write src/index.js that imports and stacks all instruments.
+import { drums }  from './drums.js'
+import { bass }   from './bass.js'
+import { chords } from './chords.js'
+import { melody } from './melody.js'
+Stack them with stack() and set overall volume/effects for a lo-fi sound.
+Do NOT rewrite the instrument files — only src/index.js.
+"""
+
+[params]
+tempo = 90
+key = "Dm"

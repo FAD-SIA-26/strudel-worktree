@@ -1,0 +1,8 @@
+{
+  "name": "@orc/types", "version": "0.0.1", "private": true,
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run" },
+  "dependencies": { "zod": "^3.23.0" },
+  "devDependencies": { "vitest": "^2.0.0", "typescript": "^5.5.0" }
+}
