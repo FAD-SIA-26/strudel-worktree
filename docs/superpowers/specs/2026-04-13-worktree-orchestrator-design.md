@@ -8,22 +8,23 @@
 ```
 MUST HAVE (demo-able MVP, ~24-30h)          NICE TO HAVE (post-hackathon)
 ──────────────────────────────────          ──────────────────────────────
-SQLite event_log + projections              Outbox processor
+SQLite event_log + projections              Redis (post-MVP only)
+In-memory event bus + WebSocket             Outbox processor
 Git worktree manager                        Full crash recovery (§7)
 CodexCLIAdapter (codex subprocess)          Security agent + patch worker
 Mastermind decomposition (LLM call)         Strategic retry (Level 2+3)
 maxConcurrentWorkers concurrency cap        Cross-lead context sharing
 Worker health taxonomy + watchdog (§17)     Changelog generation
 Workflow templates / task recipes (§16)     Literal agent-to-agent session talk
-strudel-track.toml as first template        Outbox idempotency / degrade mode
+strudel-track.toml as first template        Outbox idempotency
 Session event log per run (§8)
 Lead → spawn N workers in parallel
-Basic CLI: orc run, orc status
+Basic CLI: orc run, orc status, orc resume
 Reviewer (pick best diff, explain why)
-Merge coordinator — serialized (§18)
+Merge coordinator + AI merge-fix worker
 Preview launcher — one-click per worktree
 Web dashboard — live tree, event stream
-Approve / compare / drop / preview in UI
+Steer / approve / drop / compare / preview
 ```
 
 **Demo story (MVP):** user runs `orc run "build X"` → mastermind decomposes into sections → each section spawns 2-3 parallel Codex workers in separate worktrees → reviewer picks the best output → winning branch merges to main. That is a complete, winning demo.
@@ -46,7 +47,8 @@ Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 | Backend | Express + Drizzle (SQLite ORM) + Zod |
 | Frontend (dashboard) | Next.js + TanStack Query + Zod |
 | Shared contracts | `@orc/types` — Zod schemas for all events, commands, API types |
-| Storage | SQLite (via Drizzle) + Redis |
+| Storage | SQLite (via Drizzle) |
+| Live updates | In-memory event bus (Express) → WebSocket → browser |
 
 `@orc/types` is the contract between backend and frontend. Every event shape, command, and API request/response is a Zod schema defined once and imported by both sides.
 
@@ -58,18 +60,22 @@ Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 |---|---|---|---|
 | `event_log` | SQLite (append-only) | Durable truth — what happened | MVP |
 | `projections` | SQLite (mutable tables) | Current read state — what is | MVP |
+| `event_bus` | In-memory (Express process) | Live fanout to WebSocket clients | MVP |
 | `outbox` | SQLite (pending queue) | Pending cross-boundary side effects | nice-to-have |
-| Live coordination | Redis Streams | What's happening now (rebuildable) | MVP (required by dashboard) |
 | Code truth | git worktrees | What was built | MVP |
+| Redis | Redis Streams | Rebuildable live coordination | nice-to-have |
 
-**The one invariant (MVP):** every state transition writes to `event_log` and updates the relevant projection in a single SQLite transaction.
+**The one invariant:** every state transition writes to `event_log` + updates the relevant projection in a single SQLite transaction, then emits the event to the in-memory event bus.
 
-**Redis is MVP.** The orchestrator runs in a single Node.js process. Lead↔Worker coordination uses in-process async queues. Redis is used for exactly three surfaces:
-1. **Dashboard live event stream** — `orchestration:broadcast` → WebSocket → browser
-2. **Mastermind → Lead command stream** — `lead:<id>:inbox`
-3. **Lead → Mastermind event stream** — `lead:<id>:events`
+**MVP live coordination model:**
+- Single Node.js process — all orchestration runs in-process
+- Every state transition is appended to `event_log`
+- The same event is emitted to an in-memory `EventEmitter` (the event bus)
+- The Express WebSocket handler subscribes to the event bus and pushes events to all connected browsers
+- On reconnect: dashboard calls `GET /api/orchestration` (TanStack Query) to hydrate from SQLite, then re-subscribes to WebSocket for live updates
+- No Redis required — this is simpler, clearer, and sufficient for a single-process system
 
-The outbox is nice-to-have — Redis is always rebuilt from SQLite on boot and does not require the outbox for MVP correctness.
+Redis remains specced as a post-MVP extension for when multi-process coordination is needed.
 
 ---
 
@@ -95,8 +101,10 @@ Mastermind
 - AND ALL `merge_queue` entries have `status = 'done'`
 - AND no tasks remain in `running | queued | retrying | stalled | zombie`
 
-**OrchestrationFailed** (transitions Mastermind to `failed`) when:
-- ANY non-optional task reaches `status = 'failed'` with `maxRetries` exhausted and no Level 2/3 recovery path available
+**OrchestrationFailed** (transitions Mastermind to `failed`) when ANY of:
+- A non-optional task reaches `status = 'failed'` with `maxRetries` exhausted and no recovery path
+- A `merge_queue` entry reaches `status = 'failed'` for a non-optional section (merge-fix worker exhausted all retries)
+- A `merge_queue` entry is stuck in `conflict` and the user chose to fail the orchestration at the high-level decision prompt
 
 ### SectionLead states [MVP]
 `idle → planning → running → reviewing → merging → done | failed | escalated`
@@ -111,7 +119,7 @@ Mastermind
 - `zombie` — process dead but no completion marker written
 - `done` / `failed` — terminal, completion marker present
 
-The watchdog derives health from: stdout inactivity timer, OS process liveness check (`kill -0`), and presence of `.orc-done.json`. Full watchdog loop is nice-to-have; the state taxonomy is MVP so dashboard cards and logs are meaningful from day one.
+The watchdog derives health from: stdout inactivity timer, OS process liveness check (`kill -0`), and presence of `.orc-done.json`. **The watchdog loop is MVP** — it runs every 5 seconds and feeds live health state to the dashboard. See §17 for full spec.
 
 ### PM / Reviewer states [MVP]
 `idle → running → done | failed`
@@ -154,7 +162,7 @@ feat/{section-id}-v{n}-r{retry} # e.g. feat/rhythm-v1-r2  (retry 2 of worker v1)
 ```
 Maps 1:1 to worktree paths (`.worktrees/rhythm-v1`). Readable with `git branch --list feat/*`.
 - **merge_candidates** — lead_id, winner_worker_id, target_branch, reviewer_reasoning
-- **merge_queue** — lead_id, winner_worktree_id, target_branch, status, conflict_details, created_at, merged_at *(full schema in §18)*
+- **merge_queue** — lead_id, winner_worktree_id, target_branch, status, conflict_details, fix_worker_id, fix_attempts, created_at, merged_at *(full schema in §18)*
 - **task_edges** *(likely extra)* — parent_id, child_id, dependency type, `retry_of`
 - **previews** — worktree_id, port, url, status, launched_at  *(MVP — required by preview launcher)*
 - **agent_sessions** *(likely extra)* — entity_id, adapter, pid, status
@@ -183,21 +191,54 @@ All handlers check "already running / already done" before acting.
 
 ---
 
-## 5. Redis Coordination [MVP — required by dashboard]
+## 5. Event Bus, WebSocket & Orchestration Tracing [MVP]
 
-Use **Redis Streams** — not pub/sub — for all `lead:*` channels. Redis Streams are durable: messages persist until consumed and acknowledged, and consumers reconnect with their last-read cursor. This is what makes the boot order safe.
+### In-memory event bus
 
-| Stream | Direction | Purpose |
+The Express process maintains a single `EventEmitter` instance (the event bus). Every state transition:
+1. Writes to `event_log` + updates projection (SQLite transaction)
+2. Emits the same event to the in-memory bus
+3. The WebSocket handler broadcasts it to all connected dashboard clients
+
+```typescript
+// Every state transition follows this pattern:
+db.transaction(() => {
+  appendToEventLog(event)
+  updateProjection(event)
+})
+eventBus.emit('orchestration:event', event)  // → WebSocket → browser
+```
+
+All cross-role coordination (Mastermind → Lead → Worker) uses **in-process async queues** backed by the same event bus. No Redis needed.
+
+### Dashboard reconnect
+
+On reconnect, the dashboard:
+1. Calls `GET /api/orchestration` — TanStack Query fetches the full current state from SQLite projections
+2. Re-subscribes to WebSocket — receives live events from the in-memory bus going forward
+
+### Orchestration tracing [MVP]
+
+All cross-role interactions are **journaled as typed events** in `event_log`. No direct worker-to-worker calls exist. Every interaction is visible through the event log.
+
+Core event types:
+
+| Event | Direction | Payload |
 |---|---|---|
-| `lead:<id>:inbox` | commands → Lead | Spawn, Retry, Abort, Pause, ForceApprove |
-| `lead:<id>:events` | Lead → Mastermind | LeadDone, LeadFailed, ReviewComplete… |
-| `orchestration:broadcast` | any → dashboard | All events mirrored for WebSocket fanout |
+| `CommandIssued` | any → any | `{ from, to, commandType, payload }` |
+| `CommandAccepted` | entity → issuer | `{ commandId, entityId }` |
+| `WorkerProgress` | worker → lead | `{ workerId, output, ts }` |
+| `WorkerCompleted` | worker → lead | `{ workerId, branch, diff }` |
+| `ReviewerSelectedWinner` | reviewer → lead | `{ leadId, winnerId, reasoning }` |
+| `MergeRequested` | lead → coordinator | `{ leadId, worktreeId, targetBranch }` |
+| `MergeConflict` | coordinator → mastermind | `{ mergeId, conflictFiles }` |
+| `MergeResolved` | merge-fix worker → coordinator | `{ mergeId, strategy }` |
 
-Redis channels exist **only for Leads, not Workers.** All worker commands go via the Lead's in-process queue.
+This gives full orchestration visibility through the event log. The dashboard reads the same history.
 
-**Worker steering routing:** a directive like "drop bass-v2" is routed by the Mastermind to the **bass-lead Redis inbox** (`Abort` command with `targetWorkerId: bass-v2`). The Lead receives it and sends Abort to the worker via its in-process queue. Workers never receive Redis messages directly.
+### Redis (post-MVP)
 
-Redis is rebuilt from SQLite on every boot. Required for dashboard and live coordination.
+Redis is specced as a post-MVP extension for when the orchestrator needs to scale beyond a single process. The event bus is the drop-in replacement surface — swapping `EventEmitter` for a Redis Stream publisher is a contained change.
 
 ---
 
@@ -336,20 +377,31 @@ On `LeadFailed`: spawn fresh Lead team, mark section optional and continue, or e
 - `buildMastermindCtx()` — user goal + project file tree + git log → LLM call → structured plan
 - `buildLeadCtx(leadId)` — section task + prior attempt errors → PM agent prompt
 - `buildReviewerCtx(leadId)` — all worker diffs → reviewer prompt
-- `routeDirective(text)` — NL directive → target entity + command type [nice-to-have]
+- `routeDirective(text)` — NL directive → target entity + command type [**MVP**]
 
 **Cross-lead context** (sibling lead summaries in each lead's context) → [nice-to-have]
 
-### User Steering [nice-to-have]
+### User Steering [MVP]
+
+User sends natural language directives via the dashboard top bar. `routeDirective()` parses intent and routes as a typed `CommandIssued` event to the appropriate entity's in-process queue. All steering is journaled to `event_log`.
 
 | Directive | Routes to | Command |
 |---|---|---|
-| "make the bass darker" | bass-lead (Redis inbox) | `InjectConstraint` |
-| "drop bass-v2" | bass-lead (Redis inbox) | `Abort` with `targetWorkerId` — lead forwards via in-process queue |
-| "bass-v1 is perfect, ship it" | bass-lead (Redis inbox) | `ForceApprove` |
+| "make the bass darker" | bass-lead | `InjectConstraint` |
+| "drop bass-v2" | bass-lead | `Abort` with `targetWorkerId` — lead forwards to worker via in-process queue |
+| "bass-v1 is perfect, ship it" | bass-lead | `ForceApprove` |
 | "add a guitar section" | mastermind | `SpawnLead` |
+| "skip this section" | mastermind | `MarkSectionOptional` |
 
-Note: workers are never addressed directly via Redis. All worker commands route through the owning Lead.
+Workers are never addressed directly. All worker commands route through the owning Lead.
+
+### Dashboard actions [MVP]
+
+The dashboard supports these direct actions (not just steering text):
+- **Approve** — force-approve the reviewer's winner and trigger merge
+- **Drop** — abort a specific worker or drop all variations for a lead
+- **Compare** — side-by-side diff view of two worker variations
+- **Preview** — launch a worktree's dev server on an allocated port; for Strudel, the user hears the music
 
 ### Output Artifacts [nice-to-have]
 - Orchestration report, AI-generated changelog, runnable preview per worktree
@@ -519,20 +571,20 @@ orc dashboard
 
 ## 15. Key Design Decisions
 
-1. **Single Node.js process** — all coordination is in-process for MVP. Redis added for live dashboard.
-2. **SQLite is always authoritative** — Redis rebuilt from SQLite on boot.
+1. **Single Node.js process, no Redis for MVP** — all coordination is in-process. In-memory EventEmitter as event bus. Redis is post-MVP only, for multi-process scaling.
+2. **SQLite is always authoritative** — in-memory event bus is ephemeral; SQLite is the durable record. Dashboard hydrates from SQLite on reconnect.
 3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
 4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
-5. **Redis Streams, not pub/sub** — durable consumption, cursor-based reconnect, boot order safe.
+5. **All cross-role interactions are journaled events** — no direct worker-to-worker calls. CommandIssued / WorkerProgress / ReviewerSelectedWinner / MergeRequested / MergeConflict / MergeResolved all go into event_log. Dashboard reads the same history.
 6. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
-7. **Worker commands always via Lead** — workers have no Redis channels. Steering routes to Lead inbox; Lead forwards via in-process queue.
+7. **Worker commands always via Lead** — no entity is addressed directly from outside its parent. Steering routes to Lead; Lead forwards to worker via in-process queue.
 8. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
 9. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
-10. **Health taxonomy over raw running/failed** — `queued|running|stalled|zombie|done|failed` gives watchdog and dashboard real signal. Taxonomy is MVP; full watchdog loop is post-MVP.
+10. **Watchdog is MVP** — 5-second polling loop feeds live health state to dashboard. Health taxonomy `queued|running|stalled|zombie|done|failed` is meaningful from day one.
 11. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
 12. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
 13. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
-14. **Merge coordinator is serialized** — merges never run concurrently. One queue, one merge at a time, with a defined state flow and conflict escalation path.
+14. **Merge coordinator + AI merge-fix worker** — merges serialized FIFO. On conflict, Mastermind spawns a merge-fix worker (Codex gets conflict files + acceptance goal). User only gets A/B/C product-level decision if automated repair fails. User never touches code.
 15. **PM agent always runs as LLM call (Option B)** — even for template-driven runs, the PM agent makes a real LLM call to render `prompt_hint` variables into a rich, context-aware worker prompt. Adds latency per section but produces higher-quality prompts than string interpolation alone.
 16. **Git branch naming is fixed** — `feat/{section-id}-v{n}` for initial workers, `feat/{section-id}-v{n}-r{retry}` for retries. Maps 1:1 to worktree paths.
 17. **WebSocket server lives in `apps/api`** — Next.js API routes are never used for WebSocket. The dashboard connects as a plain browser WebSocket client to `api:4000`.
@@ -621,7 +673,7 @@ The `--template` flag overrides auto-detection: `orc run "lo-fi track" --templat
 
 ---
 
-## 17. Watchdog [MVP — taxonomy + basic loop] {#s17}
+## 17. Watchdog [MVP] {#s17}
 
 The watchdog is a background loop that monitors all workers in `running` or `spawning` state and derives their health from three inputs. It runs every 5 seconds.
 
@@ -659,18 +711,33 @@ Merges are never run concurrently. All merge requests flow through a single seri
 ```
 Lead reviewer completes → Lead emits MergeRequest
         ↓
-MergeCoordinator receives request → appends to merge_queue (SQLite)
+MergeCoordinator appends to merge_queue (SQLite)
         ↓
 Coordinator processes queue one at a time:
   1. fetch latest main
   2. git merge feat/<section> --no-ff
-  3a. clean merge → emit MergeComplete, update merge_candidates projection
-  3b. conflict → emit MergeConflict → escalate to user (dashboard prompt)
+  3a. clean merge → emit MergeComplete → next in queue
+  3b. conflict → emit MergeConflict → Mastermind spawns merge-fix worker
         ↓
-User resolves conflict in dashboard → emit ConflictResolved → coordinator retries merge
+Merge-fix worker receives:
+  - target branch + winning branch
+  - conflict files + raw merge output
+  - acceptance goal ("produce a valid, runnable merged result")
+  → Codex resolves conflicts in a fresh worktree → emits MergeResolved
         ↓
-All LeadDone + all merges complete → Mastermind emits OrchestrationComplete
+Coordinator retries merge with fix applied
+        ↓
+If merge-fix worker fails repeatedly (maxMergeRetries) →
+  Mastermind surfaces high-level decision to user in dashboard:
+    A. Retry with another candidate variation
+    B. Skip this section (mark optional)
+    C. Fail the orchestration
+  User picks A/B/C — never touches code directly
+        ↓
+All merges done → Mastermind emits OrchestrationComplete
 ```
+
+**The user never resolves code-level conflicts.** The merge-fix worker handles all code-level repair. The user only makes product-level decisions (A/B/C above) if automated repair fails.
 
 ### merge_queue projection
 
@@ -689,11 +756,12 @@ CREATE TABLE merge_queue (
 
 ### State machine
 
-`pending → merging → done | conflict → (user resolves) → retrying → done | failed`
+`pending → merging → done | conflict → fixing → retrying → done | failed`
 
 ### Key rules
 
-- Only one merge runs at a time (in-process mutex or SQLite `status='merging'` as lock).
-- Merge order follows `merge_queue` insertion order (FIFO by `created_at`).
-- On conflict: coordinator pauses queue, surfaces conflict diff to dashboard, waits for user resolution. Other pending merges stay in queue.
-- On merge failure (non-conflict git error): mark `failed`, notify Mastermind, continue queue.
+- Only one merge runs at a time. Mutex: SQLite `status='merging'` as in-process lock. FIFO by `created_at`.
+- On conflict: coordinator pauses, Mastermind spawns a merge-fix worker. Other pending merges stay queued.
+- `conflict → fixing → retrying` is fully automated. User is not involved unless `maxMergeRetries` is exhausted.
+- On unrecoverable failure: Mastermind surfaces A/B/C choice to user (no code interaction).
+- On non-conflict git error (e.g. missing branch): mark `failed`, notify Mastermind, continue queue.
