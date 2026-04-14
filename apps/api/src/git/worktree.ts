@@ -54,6 +54,33 @@ export async function hasUncommittedChanges(wtPath: string): Promise<boolean> {
   try { return (await git(wtPath, ['status', '--porcelain'])).length > 0 } catch { return false }
 }
 
+export async function commitWorktreeChanges(
+  wtPath: string,
+  message: string,
+): Promise<{ committed: boolean; sha?: string }> {
+  const status = await git(wtPath, ['status', '--porcelain', '--untracked-files=all'])
+    .catch(() => '')
+  const changedPaths = status
+    .split('\n')
+    .map(line => line.slice(3))
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !line.startsWith('.orc/'))
+
+  if (changedPaths.length === 0) return { committed: false }
+
+  await git(wtPath, ['add', '--', ...changedPaths])
+  await git(wtPath, [
+    '-c', 'user.name=ORC',
+    '-c', 'user.email=orc@local',
+    'commit',
+    '-m',
+    message,
+  ])
+
+  return { committed: true, sha: await git(wtPath, ['rev-parse', 'HEAD']) }
+}
+
 /** Create a branch at HEAD without switching the working tree — safe when run mid-orchestration */
 export async function createBranch(repoRoot: string, branch: string): Promise<void> {
   await git(repoRoot, ['branch', branch])

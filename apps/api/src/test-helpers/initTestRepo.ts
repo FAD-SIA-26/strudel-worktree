@@ -4,8 +4,7 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 
 export function initTestRepo(label = `${Date.now()}`): string {
-  const dir = path.join(os.tmpdir(), `orc-test-${label}`)
-  fs.mkdirSync(dir, { recursive: true })
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `orc-test-${label}-`))
   execSync('git init -b main', { cwd: dir, stdio: 'pipe' })
   execSync('git config user.email "test@orc.test"', { cwd: dir, stdio: 'pipe' })
   execSync('git config user.name "OrcTest"', { cwd: dir, stdio: 'pipe' })
@@ -15,6 +14,7 @@ export function initTestRepo(label = `${Date.now()}`): string {
   return dir
 }
 
-export function cleanupTestRepo(dir: string): void {
+export function cleanupTestRepo(dir?: string): void {
+  if (!dir) return
   fs.rmSync(dir, { recursive: true, force: true })
 }

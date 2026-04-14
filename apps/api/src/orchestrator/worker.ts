@@ -3,7 +3,7 @@ import type { WorkerTask, WorkerAgent } from '../agents/types'
 import type { Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import { upsertTask, upsertWorktree } from '../db/queries'
-import { createWorktree } from '../git/worktree'
+import { commitWorktreeChanges, createWorktree } from '../git/worktree'
 import { createWorkerPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
 import type { OrcEvent } from '@orc/types'
@@ -89,6 +89,16 @@ export class WorkerStateMachine {
     if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }
 
     if (result.status === 'done') {
+      try {
+        await commitWorktreeChanges(
+          wtPath,
+          `orc: complete ${this.cfg.id}`,
+        )
+      } catch (err: any) {
+        this.state = 'failed'
+        this.emit('WorkerFailed', { error: err.message ?? 'failed to commit worker changes', retryable: true })
+        return { status: 'failed', branch: result.branch, error: err.message ?? 'failed to commit worker changes' }
+      }
       this.state = 'done'
       this.emit('WorkerDone', { branch: result.branch, diff: result.diff ?? '' })
     } else {

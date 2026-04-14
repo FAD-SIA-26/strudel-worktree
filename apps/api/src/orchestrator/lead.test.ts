@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
+import * as fs from 'node:fs/promises'
 import { initTestRepo, cleanupTestRepo } from '../test-helpers/initTestRepo'
 import { createTestDb } from '../db/client'
 import { ConcurrencyGovernor } from './concurrency'
@@ -29,5 +30,26 @@ describe('LeadStateMachine', () => {
     const result = await lead.run()
     expect(result.status).toBe('done')
     expect(result.winnerBranch).toBe('feat/r1-rhythm-v1')
+  }, 30_000)
+
+  it('preserves the exact section goal when PM prompt generation falls back', async () => {
+    repoDir = initTestRepo('lead-fallback-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const lead = new LeadStateMachine({
+      id: 'main-lead', sectionId: 'main', sectionGoal: 'Create a file with exactly one line: hello',
+      numWorkers: 2, baseBranch: 'main', runBranch: 'run/r2', runId: 'r2',
+      repoRoot: repoDir, db, governor: gov,
+      commandQueue: new CommandQueue(),
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
+      llmCall: async () => JSON.stringify({ winnerId: 'r2-main-v1', reasoning: 'fallback shape' }),
+    })
+
+    await lead.run()
+
+    const leadPlan = await fs.readFile(`${repoDir}/.orc/runs/r2/leads/main.md`, 'utf8')
+    expect(leadPlan).toContain('Create a file with exactly one line: hello')
+    expect(leadPlan).not.toContain('(variation 1)')
+    expect(leadPlan).not.toContain('(variation 2)')
   }, 30_000)
 })

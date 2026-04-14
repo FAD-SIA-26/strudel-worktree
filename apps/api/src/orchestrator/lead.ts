@@ -58,9 +58,9 @@ export class LeadStateMachine {
     try {
       const raw = await this.cfg.llmCall(pmPrompt)
       const parsed = JSON.parse(raw)
-      workerPrompts = Array.isArray(parsed) ? parsed : Array.from({ length: this.cfg.numWorkers }, (_, i) => `${this.cfg.sectionGoal} (variation ${i + 1})`)
+      workerPrompts = Array.isArray(parsed) ? parsed : Array.from({ length: this.cfg.numWorkers }, () => this.cfg.sectionGoal)
     } catch {
-      workerPrompts = Array.from({ length: this.cfg.numWorkers }, (_, i) => `${this.cfg.sectionGoal} (variation ${i + 1})`)
+      workerPrompts = Array.from({ length: this.cfg.numWorkers }, () => this.cfg.sectionGoal)
     }
 
     const leadPlanPath = await createLeadPlan(this.cfg.repoRoot, this.cfg.runId, {
