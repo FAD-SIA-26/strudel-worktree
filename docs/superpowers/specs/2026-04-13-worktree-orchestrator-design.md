@@ -299,6 +299,18 @@ This prevents subprocess load collapse, API rate-limit exhaustion, and local mac
 
 Config location: `orc.config.ts` (or `.orcrc.json`), key `maxConcurrentWorkers`. Overridable per-run via `orc run --max-workers N`.
 
+### Internal delegation model [MVP]
+
+A worker may internally use Codex subagents as an implementation detail of its own run. The orchestrator treats this as a single opaque worker execution:
+
+- Only **top-level workers** are scheduled entities counted against `maxConcurrentWorkers`
+- Internal Codex subagents have **no separate visibility** in the orchestration tree
+- They have **no independent retry or recovery semantics** — if the parent worker fails, the whole run fails
+- They have **no independent worktree ownership** — all changes land in the parent worker's worktree
+- Resource usage (tokens, CPU, RAM) is **charged to the parent worker budget**
+
+This is the only safe MVP model. Allowing unlimited untracked subagents breaks visibility, control, resource governance, and crash recovery — all core promises of the design. Post-MVP, visible subworkers (fully tracked entities with lineage and budget) can be introduced as a first-class feature.
+
 ### Level 1 — Worker retry [MVP — basic retry only]
 
 `WorkerFailed` → spawn a **new worker entity + fresh worktree** (e.g. `bass-v1-r2`), with `retry_of: worker_id` lineage in `task_edges`. Failed worktree preserved for inspection. Error history passed in the new prompt.
