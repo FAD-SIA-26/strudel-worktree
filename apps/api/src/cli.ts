@@ -14,13 +14,15 @@ import { Watchdog } from './orchestrator/watchdog'
 import { createLLMClientFromEnv } from './orchestrator/llm'
 import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
+import { seedSeqsFromDb } from './db/journal'
 
-// Resolve repo root from cli.ts location (apps/api/src/cli.ts → ../../..)
+// Resolve orchestrator source root (apps/api/src/cli.ts → ../../..)
 const __filename = url.fileURLToPath(import.meta.url)
 const __dirname  = path.dirname(__filename)
 const REPO_ROOT  = path.resolve(__dirname, '../../..')
 
-const DB_PATH = process.env.ORC_DB_PATH ?? path.join(REPO_ROOT, 'orc.db')
+// DB lives in the TARGET repo (where orc is invoked), not in the orchestrator repo
+const DB_PATH = process.env.ORC_DB_PATH ?? path.join(process.cwd(), 'orc.db')
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
 
 const program = new Command().name('orc').version('0.1.0')
@@ -31,7 +33,19 @@ program
   .option('--mock', 'use MockAgent (deterministic, no real Codex)')
   .option('--run-id <id>', 'custom run ID', `run-${Date.now()}`)
   .action(async (goal: string, opts) => {
+    // orc requires a git repo — branches and worktrees are how it isolates parallel work
+    try {
+      const { execSync } = await import('node:child_process')
+      execSync('git rev-parse --git-dir', { cwd: process.cwd(), stdio: 'pipe' })
+    } catch {
+      console.error('[orc] error: not a git repository.')
+      console.error('[orc] orc must be run from inside a git repo.')
+      console.error('[orc] Run `git init && git commit -m "init"` first, or cd into an existing repo.')
+      process.exit(1)
+    }
+
     const db     = initDb(DB_PATH)
+    seedSeqsFromDb(db)   // prevent UNIQUE violations if DB already has sequences from a prior run
     const gov    = new ConcurrencyGovernor(parseInt(opts.maxWorkers))
     const leadQs = new Map<string, CommandQueue<any>>()
     const app    = createApp({ db, leadQueues: leadQs })
@@ -43,7 +57,7 @@ program
     watchdog.start()
 
     const m = new MastermindStateMachine({
-      repoRoot:            REPO_ROOT,
+      repoRoot:            process.cwd(),   // target repo where orc was invoked
       db, governor:        gov,
       runId:               opts.runId,
       agentFactory:        opts.mock ? () => new MockAgent({ delayMs: 200, outcome: 'done' }) : () => new CodexCLIAdapter(),
@@ -83,6 +97,7 @@ program
   .command('status')
   .action(() => {
     const db = initDb(DB_PATH)
+    seedSeqsFromDb(db)
     console.table(getAllTasks(db))
   })
 
@@ -91,6 +106,7 @@ program
   .description('[DEGRADED] Restart and show persisted state. Worktree reconciliation is [POST-DEMO].')
   .action(async () => {
     const db     = initDb(DB_PATH)
+    seedSeqsFromDb(db)
     const leadQs = new Map<string, CommandQueue<any>>()
     const app    = createApp({ db, leadQueues: leadQs })
     const server = http.createServer(app)
