@@ -2274,52 +2274,82 @@ cd apps/api && pnpm vitest run src/orchestrator/llm.test.ts
 
 ```toml
 # templates/strudel-track.toml
+#
+# Structural isolation contract (critical for merge safety):
+#   Each section writes ONLY to its own file: src/<section-id>.js
+#   The arrangement section imports from those files.
+#   Workers must NEVER touch files owned by other sections.
+#   This prevents merge conflicts by design.
+
 [template]
 name = "strudel-track"
-version = "1.0"
-description = "Lo-fi / electronic track with parallel instrument sections"
+version = "1.1"
+description = "Lo-fi / electronic track — one lead per instrument lane"
 
 [[sections]]
-id = "rhythm"
-label = "Rhythm Section (bass + drums)"
+id = "drums"
+label = "Drums"
 depends_on = []
 workers = 2
 prompt_hint = """
-Write a Strudel.js pattern for bass and drums.
-Use sound() and note() functions. Keep it minimal and loopable.
-Tempo: {tempo}bpm, key: {key}.
-Export as a single Strudel expression.
+Write a Strudel.js drum pattern. Output to src/drums.js ONLY.
+Export a single named const: export const drums = <pattern>
+Keep it minimal, loopable, lo-fi. Tempo: {tempo}bpm.
+Do NOT touch any other file.
 """
 
 [[sections]]
-id = "harmony"
-label = "Harmony / Chords"
-depends_on = ["rhythm"]
+id = "bass"
+label = "Bass"
+depends_on = []
 workers = 2
 prompt_hint = """
-Write a Strudel.js chord pattern complementing this rhythm section:
-{rhythm.winner_code}
-Tempo: {tempo}bpm, key: {key}.
+Write a Strudel.js bass line. Output to src/bass.js ONLY.
+Export: export const bass = <pattern>
+Key: {key}, Tempo: {tempo}bpm. Complement the drums if possible.
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "chords"
+label = "Harmony / Chords"
+depends_on = ["bass"]
+workers = 2
+prompt_hint = """
+Write a Strudel.js chord pattern. Output to src/chords.js ONLY.
+Export: export const chords = <pattern>
+Key: {key}, Tempo: {tempo}bpm. Reference bass pattern for context:
+{bass.winner_code}
+Do NOT touch any other file.
 """
 
 [[sections]]
 id = "melody"
 label = "Lead Melody"
-depends_on = ["rhythm", "harmony"]
+depends_on = ["chords"]
 workers = 3
 prompt_hint = """
-Write a Strudel.js lead melody over:
-Rhythm: {rhythm.winner_code}
-Harmony: {harmony.winner_code}
-Tempo: {tempo}bpm, key: {key}.
+Write a Strudel.js lead melody. Output to src/melody.js ONLY.
+Export: export const melody = <pattern>
+Key: {key}, Tempo: {tempo}bpm. Chords context:
+{chords.winner_code}
+Do NOT touch any other file.
 """
 
 [[sections]]
 id = "arrangement"
 label = "Final Arrangement"
-depends_on = ["rhythm", "harmony", "melody"]
+depends_on = ["drums", "bass", "chords", "melody"]
 workers = 1
-prompt_hint = "Combine rhythm, harmony, and melody into a final Strudel.js arrangement."
+prompt_hint = """
+Write src/index.js that imports and stacks all instruments.
+import { drums }  from './drums.js'
+import { bass }   from './bass.js'
+import { chords } from './chords.js'
+import { melody } from './melody.js'
+Stack them with stack() and set overall volume/effects for a lo-fi sound.
+Do NOT rewrite the instrument files — only src/index.js.
+"""
 
 [params]
 tempo = 90
@@ -2388,9 +2418,10 @@ JSON array of strings: `["prompt for v1", "prompt for v2", ...]`
 You are a focused implementation worker in your assigned git worktree. Read your worker-plan.md, implement the solution, update the checklist, and write a Result Summary when done.
 
 ## Constraints
-- Only modify files directly related to your assigned task
+- Only modify the file(s) explicitly named in your prompt_hint (e.g. src/drums.js)
+- Do NOT touch files owned by other sections — this is the merge-safety contract
 - Do not refactor unrelated code
-- Run tests before marking complete
+- Run tests / build before marking complete
 - Update .orc/worker-plan.md Result Summary before finishing
 - The runner writes .orc/.orc-done.json automatically on exit — do not write it yourself
 ```
@@ -3060,10 +3091,13 @@ export function DetailPanel({ selectedId, sections }: { selectedId: string | nul
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs — leads get a Compare tab, workers get plan/logs/preview */}
       <div className="flex border-b border-gray-700">
-        {(['plan','logs','preview'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
+        {(isLead
+          ? ['compare', 'plan', 'logs'] as const
+          : ['plan', 'logs', 'preview'] as const
+        ).map(t => (
+          <button key={t} onClick={() => setTab(t as any)}
             className={`px-4 py-2 text-xs capitalize ${tab === t ? 'border-b-2 border-blue-400 text-blue-300' : 'text-gray-500 hover:text-gray-300'}`}>
             {t}
           </button>
@@ -3072,41 +3106,71 @@ export function DetailPanel({ selectedId, sections }: { selectedId: string | nul
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto p-4 text-xs font-mono text-gray-400">
+
+        {/* Compare tab — the primary human-control surface for leads */}
+        {tab === 'compare' && isLead && section && (
+          <div className="flex flex-col gap-3">
+            <p className="text-[10px] text-gray-500 font-sans">
+              Listen to each variant and approve the winner. Strudel URLs open in a new tab.
+            </p>
+            {section.workers.map(w => (
+              <div key={w.id}
+                className={`flex items-center gap-3 p-3 rounded border
+                  ${w.state === 'done' ? 'border-green-700 bg-green-950' : 'border-gray-700 bg-gray-800 opacity-60'}`}>
+                <div className="flex flex-col flex-1 gap-1">
+                  <span className="text-gray-200 font-bold">{w.id}</span>
+                  <span className={`text-[10px] ${
+                    w.state === 'done' ? 'text-green-400' :
+                    w.state === 'running' ? 'text-blue-400' :
+                    w.state === 'failed' ? 'text-red-400' : 'text-gray-500'
+                  }`}>{w.state}</span>
+                </div>
+                {/* Listen button — opens Strudel URL */}
+                {w.previewUrl && w.state === 'done' && (
+                  <a href={w.previewUrl} target="_blank" rel="noreferrer"
+                    className="text-[11px] bg-purple-800 hover:bg-purple-700 text-purple-200 px-3 py-1.5 rounded font-sans">
+                    ♪ Listen
+                  </a>
+                )}
+                {/* Approve button */}
+                {w.state === 'done' && (
+                  <button
+                    onClick={() => fetch(`${API}/api/approve`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ workerId: w.id, leadId: `${sectionId}-lead` }),
+                    })}
+                    className="text-[11px] bg-green-700 hover:bg-green-600 text-white px-3 py-1.5 rounded font-sans">
+                    ✓ Pick this
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {tab === 'plan' && (
-          <p className="text-gray-500">
+          <p className="text-gray-500 font-sans">
             {isLead
               ? `Lead plan: .orc/runs/current/leads/${sectionId}.md`
               : `Worker plan: .worktrees/${selectedId}/.orc/worker-plan.md`}<br /><br />
-            View directly in your editor — it is a plain markdown file.
+            Plain markdown — view directly in your editor.
           </p>
         )}
         {tab === 'logs' && (
-          <p className="text-gray-500">
-            Session log: <code>.worktrees/{selectedId}/.orc/.orc-session.jsonl</code><br /><br />
-            <code>tail -f .worktrees/{selectedId}/.orc/.orc-session.jsonl</code>
+          <p className="text-gray-500 font-sans">
+            {isLead
+              ? 'Select a worker to view its session log.'
+              : <><code>.worktrees/{selectedId}/.orc/.orc-session.jsonl</code><br /><br /><code>tail -f .worktrees/{selectedId}/.orc/.orc-session.jsonl</code></>
+            }
           </p>
         )}
-        {tab === 'preview' && (
+        {tab === 'preview' && !isLead && (
           worker?.previewUrl
-            ? <a href={worker.previewUrl} target="_blank" rel="noreferrer" className="text-blue-400 underline break-all">{worker.previewUrl}</a>
-            : <p className="text-gray-500">No preview. Click ▶ Preview when the worker is done.</p>
+            ? <a href={worker.previewUrl} target="_blank" rel="noreferrer" className="text-blue-400 underline break-all font-sans">{worker.previewUrl}</a>
+            : <p className="text-gray-500 font-sans">No preview yet. Worker must be done first.</p>
         )}
       </div>
-
-      {/* Reviewer verdict for lead */}
-      {isLead && section && section.workers.filter(w => w.state === 'done').length > 0 && (
-        <div className="border-t border-gray-700 p-3">
-          <div className="text-[10px] text-green-400 font-bold mb-2">DONE WORKERS</div>
-          <div className="flex gap-2 flex-wrap">
-            {section.workers.filter(w => w.state === 'done').map(w => (
-              <button key={w.id} onClick={() => fetch(`${API}/api/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workerId: w.id, leadId: `${sectionId}-lead` }) })}
-                className="text-[11px] bg-green-900 hover:bg-green-700 text-green-200 px-2 py-1 rounded">
-                ✓ {w.id}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
