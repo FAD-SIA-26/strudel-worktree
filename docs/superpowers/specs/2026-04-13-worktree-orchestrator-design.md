@@ -425,13 +425,16 @@ The dashboard supports these direct actions (not just steering text):
 
 ```
 skills/
-├── mastermind.md    # MVP
-├── lead.md          # MVP
-├── pm-agent.md      # MVP
-├── implementer.md   # MVP — base template, Codex prefix in agents/codex-cli.ts
-├── reviewer.md      # MVP
-├── security.md      # post-MVP
-└── patch-worker.md  # post-MVP
+├── mastermind.md      # MVP — orchestration, decomposition, delegation
+├── lead.md            # MVP — section coordination, retry, merge
+├── pm-agent.md        # MVP — sub-task decomposition, worker prompt generation
+├── implementer.md     # MVP — Codex execution (Codex-specific prefix in codex-cli.ts)
+├── reviewer.md        # MVP — diff comparison, winner selection
+├── run-planner.md     # MVP — teaches Mastermind how to write run-plan.md
+├── lead-planner.md    # MVP — teaches Lead how to write its section plan
+├── worker-planner.md  # MVP — teaches Worker how to write its task sheet
+├── security.md        # post-MVP
+└── patch-worker.md    # post-MVP
 ```
 
 ### Skills file format
@@ -555,14 +558,19 @@ packages/
     package.json
 
 skills/
-  mastermind.md · lead.md · pm-agent.md · implementer.md · reviewer.md  # MVP
-  security.md · patch-worker.md                                          # post-MVP
+  mastermind.md         # MVP — orchestration, decomposition, delegation
+  lead.md               # MVP — section coordination, retry, merge
+  pm-agent.md           # MVP — sub-task decomposition, worker prompt generation
+  implementer.md        # MVP — Codex execution, Codex-specific prefix
+  reviewer.md           # MVP — diff comparison, winner selection
+  run-planner.md        # MVP — how to write a run-plan.md (Mastermind skill)
+  lead-planner.md       # MVP — how to write a lead section plan (Lead skill)
+  worker-planner.md     # MVP — how to write a worker task sheet (Worker skill)
+  security.md           # post-MVP
+  patch-worker.md       # post-MVP
 
 templates/
-  strudel-track.toml    # MVP — workflow decomposition template
-  run-plan.md           # MVP — Mastermind plan file template
-  lead-plan.md          # MVP — Lead section plan template
-  worker-plan.md        # MVP — Worker task sheet template (lightweight)
+  strudel-track.toml    # MVP — workflow decomposition data (sections, deps, params)
 
 docs/superpowers/specs/
 ```
@@ -823,6 +831,11 @@ CREATE TABLE merge_queue (
 Each orchestration level persists a markdown planning artifact used for context management, task tracking, and human inspection.
 
 **Key principle:** markdown plans are **execution memory**, not system truth. SQLite (`event_log` + projections) remains authoritative. Plans exist to improve context compression, parent/child handoff quality, retry determinism, and human inspectability in the dashboard.
+
+**Plan files vs plan skills:**
+- `skills/run-planner.md`, `skills/lead-planner.md`, `skills/worker-planner.md` — agent skills that teach each agent *how* to produce its plan (format, sections, what to include, update discipline). These live in `skills/` alongside all other agent behavior files.
+- `.orc/runs/<run-id>/run-plan.md`, `leads/<section>.md`, `.orc/worker-plan.md` — the actual plan instances produced by agents at runtime. These live in the repo/worktrees.
+- `templates/strudel-track.toml` — workflow decomposition data (sections, dependencies, params). This is orchestration config, not an agent skill.
 
 ### Ownership and level
 
