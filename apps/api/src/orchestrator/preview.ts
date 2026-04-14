@@ -2,17 +2,41 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getSQLite, type Db } from '../db/client'
 
-function codeFileForWorker(worktreeId: string): string {
-  const sectionId = worktreeId.replace(/-v\d+(-r\d+)?$/, '')
-  return sectionId === 'arrangement' ? 'src/index.js' : `src/${sectionId}.js`
+function sectionIdForWorker(worktreeId: string): string {
+  const namespacedMatch = worktreeId.match(/-([^-]+)-v\d+(?:-r\d+)?$/)
+  if (namespacedMatch?.[1]) return namespacedMatch[1]
+  return worktreeId.replace(/-v\d+(-r\d+)?$/, '')
+}
+
+async function codeFileForWorker(worktreePath: string, worktreeId: string): Promise<string> {
+  const sectionId = sectionIdForWorker(worktreeId)
+  const preferred = sectionId === 'arrangement'
+    ? ['src/index.js']
+    : [`src/${sectionId}.js`, 'src/index.js']
+
+  for (const candidate of preferred) {
+    try {
+      await fs.access(path.join(worktreePath, candidate))
+      return candidate
+    } catch {}
+  }
+
+  try {
+    const srcDirEntries = await fs.readdir(path.join(worktreePath, 'src'))
+    const jsFiles = srcDirEntries.filter(entry => entry.endsWith('.js')).sort()
+    if (jsFiles.includes('index.js')) return 'src/index.js'
+    if (jsFiles[0]) return `src/${jsFiles[0]}`
+  } catch {}
+
+  return preferred[0] ?? 'src/index.js'
 }
 
 export async function generateStrudelPreviewUrl(worktreePath: string, worktreeId: string): Promise<string> {
-  const codeFile = codeFileForWorker(worktreeId)
+  const codeFile = await codeFileForWorker(worktreePath, worktreeId)
   let code = ''
   try { code = await fs.readFile(path.join(worktreePath, codeFile), 'utf-8') }
   catch { code = `// ${codeFile} not yet written` }
-  const encoded = Buffer.from(code).toString('base64url')
+  const encoded = Buffer.from(code).toString('base64')
   return `https://strudel.cc/#${encoded}`
 }
 

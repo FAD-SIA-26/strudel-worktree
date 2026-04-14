@@ -9,6 +9,22 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout.trim()
 }
 
+function parsePorcelainStatusPaths(output: string): string[] {
+  return output
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean)
+    .map(line => {
+      const match = line.match(/^[ MADRCU?!]{2} (.+)$/)
+      if (!match?.[1]) return null
+      const rawPath = match[1]
+      return rawPath.includes(' -> ')
+        ? rawPath.split(' -> ').at(-1)?.trim() ?? null
+        : rawPath.trim()
+    })
+    .filter((value): value is string => Boolean(value))
+}
+
 export interface WorktreeInfo { path: string; branch: string | null; head: string }
 interface WorktreeOptions {
   hydrateDependencies?: boolean
@@ -111,13 +127,10 @@ export async function commitWorktreeChanges(
   wtPath: string,
   message: string,
 ): Promise<{ committed: boolean; sha?: string }> {
-  const status = await git(wtPath, ['status', '--porcelain', '--untracked-files=all'])
+  const status = await exec('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: wtPath })
+    .then(result => String(result.stdout))
     .catch(() => '')
-  const changedPaths = status
-    .split('\n')
-    .map(line => line.slice(3))
-    .map(line => line.trim())
-    .filter(Boolean)
+  const changedPaths = parsePorcelainStatusPaths(status)
     .filter(line => !line.startsWith('.orc/'))
 
   if (changedPaths.length === 0) return { committed: false }
@@ -166,10 +179,9 @@ export function getHeadShaSync(repoRoot: string): string {
 }
 
 function getStatusEntriesSync(repoRoot: string): string[] {
-  return execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' })
-    .split('\n')
-    .map(line => line.slice(3).trim())
-    .filter(Boolean)
+  return parsePorcelainStatusPaths(
+    execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' }),
+  )
 }
 
 export function applyRunBranchToCurrentBranchSync(

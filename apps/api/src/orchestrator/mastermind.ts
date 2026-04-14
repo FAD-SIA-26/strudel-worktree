@@ -13,6 +13,7 @@ import { ContextManager } from './context'
 import type { WorkerAgent } from '../agents/types'
 import type { OrcEvent, OrcCommand } from '@orc/types'
 import { getOrcPaths } from '../runtime/paths'
+import { loadTemplate, renderPromptHint } from './templateLoader'
 
 interface SectionPlan { id: string; goal: string; numWorkers: number; dependsOn: string[] }
 
@@ -61,10 +62,20 @@ export class MastermindStateMachine {
 
     let sections: SectionPlan[]
     try {
-      const prompt = await this.ctx.buildMastermindPrompt(opts.userGoal, this.cfg.runId)
-      const raw = await this.cfg.llmCall(prompt)
-      const parsed = JSON.parse(raw)
-      sections = Array.isArray(parsed) ? parsed.map(s => ({ ...s, dependsOn: s.dependsOn ?? s.depends_on ?? [] })) : [{ id: 'main', goal: opts.userGoal, numWorkers: 2, dependsOn: [] }]
+      if (this.cfg.templatePath) {
+        const template = await loadTemplate(this.cfg.templatePath)
+        sections = template.sections.map(section => ({
+          id: section.id,
+          goal: renderPromptHint(section.prompt_hint, template.params, {}),
+          numWorkers: section.workers,
+          dependsOn: section.depends_on,
+        }))
+      } else {
+        const prompt = await this.ctx.buildMastermindPrompt(opts.userGoal, this.cfg.runId)
+        const raw = await this.cfg.llmCall(prompt)
+        const parsed = JSON.parse(raw)
+        sections = Array.isArray(parsed) ? parsed.map(s => ({ ...s, dependsOn: s.dependsOn ?? s.depends_on ?? [] })) : [{ id: 'main', goal: opts.userGoal, numWorkers: 2, dependsOn: [] }]
+      }
     } catch {
       sections = [{ id: 'main', goal: opts.userGoal, numWorkers: 2, dependsOn: [] }]
     }

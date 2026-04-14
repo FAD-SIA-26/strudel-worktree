@@ -38,11 +38,16 @@ function resolveRepoRoot(): string {
 }
 
 const REPO_ROOT = resolveRepoRoot()
-const { webRoot: WEB_ROOT } = getOrcAppRoots(import.meta.url)
+const { apiRoot: API_ROOT, webRoot: WEB_ROOT } = getOrcAppRoots(import.meta.url)
 const ORC_PATHS = getOrcPaths(REPO_ROOT)
 const DB_PATH = process.env.ORC_DB_PATH ?? ORC_PATHS.dbPath
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
 const DASHBOARD_PORT = parseInt(process.env.ORC_DASHBOARD_PORT ?? '3000')
+
+function selectDefaultTemplatePath(goal: string): string | undefined {
+  if (!/\b(track|song|beat|melody|chords|bass|drums|strudel|arrangement)\b/i.test(goal)) return undefined
+  return path.resolve(API_ROOT, '../../templates/strudel-track.toml')
+}
 
 function registerCleanup(cleanup: () => void): () => void {
   const handler = () => {
@@ -86,6 +91,7 @@ program
     const startingBranch = getCurrentBranchSync(REPO_ROOT)
     const startingHead = getHeadShaSync(REPO_ROOT)
     const baseBranch = startingBranch ?? startingHead
+    const templatePath = selectDefaultTemplatePath(goal)
 
     await fs.mkdir(ORC_PATHS.stateDir, { recursive: true })
 
@@ -141,9 +147,13 @@ program
           }
         : createLLMClientFromEnv(),
       leadQueues:          leadQs,
+      templatePath,
       maxConcurrentWorkers: parseInt(opts.maxWorkers),
     })
 
+    if (templatePath) {
+      console.log(`[orc] using template ${path.basename(templatePath)}`)
+    }
     console.log(`[orc] run "${goal}" (run-id: ${opts.runId})`)
     const result = await m.run({ userGoal: goal })
     watchdog.stop()

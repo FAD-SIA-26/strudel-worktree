@@ -11,6 +11,7 @@ Goal: ${userGoal}\nRun ID: ${runId}`
   buildPMPrompt(sectionId: string, sectionGoal: string, numWorkers: number, errorHistory: string[]): string {
     return `You are a PM agent for the "${sectionId}" section.
 Generate ${numWorkers} distinct implementation prompts for: ${sectionGoal}
+If the section goal includes explicit file paths, export names, or output constraints, preserve those requirements exactly in every variant.
 Return a JSON array of strings — each prompt must describe a different approach.
 ${errorHistory.length ? `\nPrior failures to avoid:\n${errorHistory.join('\n')}` : ''}`
   }

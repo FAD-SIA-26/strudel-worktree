@@ -6,6 +6,7 @@ import { initTestRepo, cleanupTestRepo } from '../test-helpers/initTestRepo'
 import {
   addWorktreeForBranch,
   applyRunBranchToCurrentBranchSync,
+  commitWorktreeChanges,
   createWorktree,
   getCurrentBranchSync,
   getHeadShaSync,
@@ -84,5 +85,17 @@ describe('worktree', () => {
 
     expect(applied.applied).toBe(false)
     expect(applied.reason).toContain('README.md')
+  })
+
+  it('commits modified tracked files without truncating the first path from porcelain status output', async () => {
+    repoDir = initTestRepo('wt-commit-porcelain-test')
+    await fs.writeFile(path.join(repoDir, 'README.md'), '# updated\n')
+    await fs.writeFile(path.join(repoDir, 'track.md'), 'track draft\n')
+
+    const result = await commitWorktreeChanges(repoDir, 'test commit')
+
+    expect(result.committed).toBe(true)
+    expect(execFileSync('git', ['show', 'HEAD:README.md'], { cwd: repoDir, encoding: 'utf8' })).toBe('# updated\n')
+    expect(execFileSync('git', ['show', 'HEAD:track.md'], { cwd: repoDir, encoding: 'utf8' })).toBe('track draft\n')
   })
 })
