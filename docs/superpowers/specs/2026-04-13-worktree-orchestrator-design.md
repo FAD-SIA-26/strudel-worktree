@@ -615,7 +615,7 @@ orc dashboard
 9. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
 10. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
 11. **Watchdog is MVP** — 5-second polling loop feeds live health state to dashboard. Health taxonomy `queued|running|stalled|zombie|done|failed` is meaningful from day one.
-12. **Session event log per run** — `.orc/.orc-session.jsonl` inside each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
+12. **Session event log per run** — `.orc/.orc-session.jsonl` written by the runner inside the worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
 13. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
 14. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
 15. **Merge coordinator + AI merge-fix worker** — merges serialized FIFO onto `run/<id>`. On conflict, Mastermind spawns a merge-fix worker producing `repair/<merge-id>-v{n}`. User only gets A/B/C product-level decision if automated repair fails. User never touches code.
