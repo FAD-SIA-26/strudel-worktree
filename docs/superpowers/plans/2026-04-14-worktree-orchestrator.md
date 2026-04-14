@@ -30,7 +30,6 @@
 - Generic preview launcher (local dev-server)
 - `routeDirective()` NL steering — API stub only, not routed to entity queues
 - Rich NL steering routing
-- Compare tab
 
 ---
 
