@@ -134,6 +134,7 @@ Categories are fixed; exact column set evolves during implementation:
 - **runs** — executing agents, adapter type, pid, started_at, last_output_ts
 - **worktrees** — worker_id, path, branch, base_branch, git_status, diff_summary
 - **merge_candidates** — lead_id, winner_worker_id, target_branch, reviewer_reasoning
+- **merge_queue** — lead_id, winner_worktree_id, target_branch, status, conflict_details, created_at, merged_at
 - **task_edges** *(likely extra)* — parent_id, child_id, dependency type, `retry_of`
 - **previews** — worktree_id, port, url, status, launched_at  *(MVP — required by preview launcher)*
 - **agent_sessions** *(likely extra)* — entity_id, adapter, pid, status
