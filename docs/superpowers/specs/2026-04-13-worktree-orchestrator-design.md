@@ -121,7 +121,7 @@ Mastermind
 - `zombie` — process dead but no completion marker written
 - `done` / `failed` — terminal, completion marker present
 
-The watchdog derives health from: stdout inactivity timer, OS process liveness check (`kill -0`), and presence of `.orc-done.json`. **The watchdog loop is MVP** — it runs every 5 seconds and feeds live health state to the dashboard. See §17 for full spec.
+The watchdog derives health from: stdout inactivity timer, OS process liveness check (`kill -0`), and presence of `.orc/.orc-done.json`. **The watchdog loop is MVP** — it runs every 5 seconds and feeds live health state to the dashboard. See §17 for full spec.
 
 ### PM / Reviewer states [MVP]
 `idle → running → done | failed`
@@ -485,7 +485,7 @@ For a Worker: also shows health status + retry/abort controls.
 
 **Top bar [MVP]:** Global orchestration status. Dashboard action buttons (Approve, Drop, Compare, Preview) are the primary steering path. Optional natural-language steering input may be exposed if implemented; it is not required for MVP.
 
-**Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Port pool: `PORT_POOL_START=3100`, size 50 (supports up to 50 simultaneous previews). Port assigned as `3100 + (worktree_index % 50)`, tracked in `previews` projection. For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
+**Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Port pool: `PORT_POOL_START=3100`, size 50. On preview launch, the coordinator selects the first available port in the pool by checking the `previews` projection for active allocations. If no port is free, the launch fails with a clear "port pool exhausted" status. Port allocation and `previews` row creation happen in one serialized step. Stopping a preview marks the row `inactive` and releases the port back into the pool. For Strudel, this starts the Strudel dev server in the worktree directory so the user can hear the music directly from the dashboard.
 
 **Frontend:** Next.js App Router. All API types from `@orc/types`.
 
@@ -608,7 +608,7 @@ orc dashboard
 1. **Single Node.js process, no Redis for MVP** — all coordination is in-process. In-memory EventEmitter as event bus. Redis is post-MVP only, for multi-process scaling.
 2. **SQLite is always authoritative** — in-memory event bus is ephemeral; SQLite is the durable record. Dashboard hydrates from SQLite on reconnect.
 3. **Fresh worktree per retry** — clean isolation, `retry_of` lineage in task_edges.
-4. **Completion marker** — `.orc-done.json` written by runner. Recovery never infers state from commits alone.
+4. **Completion marker** — `.orc/.orc-done.json` written by runner inside the worktree. Recovery never infers state from commits alone.
 5. **All cross-role interactions are journaled events** — no direct worker-to-worker calls. Core event types go into event_log; dashboard reads the same history. Do not over-formalize: event structure serves current-state visibility, logs, retries, reviewer verdict, merge flow, and dashboard rendering — nothing more in MVP.
 6. **Merge target is `run/<id>`, not `main`** — section winners merge into a run branch. Only at orchestration end does the Mastermind fast-forward `run/<id>` → `main`. Prevents integration weirdness during parallel section execution.
 7. **Outbox generation counters** — `spawn-{entity_id}-{spawn_gen}`, not permanent per entity, so crash-restart re-spawns are allowed.
@@ -616,7 +616,7 @@ orc dashboard
 9. **Skills files are first-class** — agent behavior in `skills/*.md`, not hardcoded.
 10. **maxConcurrentWorkers is MVP, not optional** — without it, parallel Codex spawns collapse the demo on any real machine. Default 4, configurable.
 11. **Watchdog is MVP** — 5-second polling loop feeds live health state to dashboard. Health taxonomy `queued|running|stalled|zombie|done|failed` is meaningful from day one.
-12. **Session event log per run** — `.orc-session.jsonl` in each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
+12. **Session event log per run** — `.orc/.orc-session.jsonl` inside each worktree. Cheap to write, high value for retry prompts and debugging. Prior session summary injected into retry prompt.
 13. **Workflow templates for known domains** — `strudel-track.toml` hardcodes the instrument decomposition and dependency ordering. Reduces LLM variance, makes the demo intentional. Mastermind falls back to free LLM decomposition when no template matches.
 14. **Preview launcher is MVP** — one-click launch of any worktree's app. For Strudel: start the dev server so the user hears the music. Port pool: `PORT_POOL_START=3100`, size 50.
 15. **Merge coordinator + AI merge-fix worker** — merges serialized FIFO onto `run/<id>`. On conflict, Mastermind spawns a merge-fix worker producing `repair/<merge-id>-v{n}`. User only gets A/B/C product-level decision if automated repair fails. User never touches code.
@@ -718,21 +718,20 @@ The watchdog is a background loop that monitors all workers in `running` or `spa
 | Input | How | Signal |
 |---|---|---|
 | stdout inactivity | time since last `WorkerProgress` event in SQLite | `stalled` if > threshold (default 60s) |
-| process liveness | `kill -0 <pid>` on the pid in `runs` projection | `zombie` if process dead + no `.orc-done.json` |
+| process liveness | `kill -0 <pid>` on the pid in `runs` projection | `zombie` if process dead + no `.orc/.orc-done.json` |
 | completion marker | read `.orc/.orc-done.json` from inside worktree | `done` or `failed` if marker present |
 
 ### Emitted events
 
-- `WorkerHealthy` — **not** journaled to `event_log` on every poll cycle. Instead, the watchdog updates `last_seen_at` in the `runs` projection. A `WorkerHealthy` event is only emitted (and journaled) on transition *back* to healthy from `stalled` or `zombie`.
 - `WorkerStalled` — first time inactivity threshold exceeded; state transitions to `stalled`
-- `WorkerZombie` — process dead, no marker; state transitions to `zombie`
-- `WorkerRecovered` — worker was `stalled` but stdout resumed; transitions back to `running`
+- `WorkerZombie` — process dead, no `.orc/.orc-done.json`; state transitions to `zombie`
+- `WorkerRecovered` — worker transitions back to `running` from `stalled` (stdout resumed). This is the only journaled health-recovery event. Ongoing health is tracked via `last_seen_at` in the `runs` projection — not by emitting events every poll cycle.
 
 ### Actions on health events
 
 - **Stalled:** Lead is notified via in-process queue. Lead waits one more poll cycle, then emits `Abort` + schedules retry.
 - **Zombie:** treated as `WorkerFailed` with `retryable: true`. Retry logic in §9 applies.
-- **Healthy / Recovered:** no action, state updated in `tasks` projection.
+- **Recovered:** state updated in `tasks` projection; `WorkerRecovered` journaled to `event_log`.
 
 The watchdog does **not** make retry decisions — it observes and emits. The Lead owns the retry decision.
 
@@ -865,8 +864,8 @@ Each orchestration level persists a markdown planning artifact used for context 
   rhythm-v1/
     .orc/
       worker-plan.md      # Worker owns
-      .orc-session.jsonl  # (existing — Codex output stream)
-      .orc-done.json      # (existing — completion marker)
+      .orc-session.jsonl  # (existing — Codex output stream, canonical path: .orc/.orc-session.jsonl)
+      .orc-done.json      # (existing — completion marker, canonical path: .orc/.orc-done.json)
 ```
 
 ### Mastermind plan (`run-plan.md`) — full weight
@@ -996,7 +995,7 @@ Plans are not freeform diaries. Each level has bounded update points:
 
 When a worker retries, the new worker receives:
 1. The failed worker's `.orc/worker-plan.md` (what was attempted, what blocked it)
-2. The failed worker's `.orc-session.jsonl` summary (what Codex actually did)
+2. The failed worker's `.orc/.orc-session.jsonl` summary (what Codex actually did)
 3. The lead plan (section constraints and acceptance criteria)
 4. A new `worker-plan.md` pre-filled with inherited context + new strategy
 
