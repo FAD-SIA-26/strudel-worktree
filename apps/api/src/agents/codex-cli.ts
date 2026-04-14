@@ -8,6 +8,13 @@ import { getWorktreeDiff } from '../git/worktree'
 export class CodexCLIAdapter implements WorkerAgent {
   private proc: ReturnType<typeof spawn> | null = null
 
+  private buildChildEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env }
+    delete env.CODEX_THREAD_ID
+    delete env.CODEX_CI
+    return env
+  }
+
   async run(task: WorkerTask, ctx: WorkerContext): Promise<WorkerResult> {
     const sessionPath = path.join(ctx.worktreePath, '.orc', '.orc-session.jsonl')
     const session = await fs.open(sessionPath, 'a')
@@ -36,7 +43,7 @@ export class CodexCLIAdapter implements WorkerAgent {
       let heartbeatTimer: NodeJS.Timeout | null = null
       this.proc = spawn('codex', ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', prompt], {
         cwd: ctx.worktreePath,
-        env: { ...process.env },
+        env: this.buildChildEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       void ctx.onHeartbeat?.({ pid: this.proc.pid, ts: Date.now(), output: 'codex process started' })

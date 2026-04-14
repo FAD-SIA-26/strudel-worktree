@@ -48,6 +48,8 @@ function makeProc() {
 describe('CodexCLIAdapter', () => {
   beforeEach(() => {
     vi.useRealTimers()
+    delete process.env.CODEX_THREAD_ID
+    delete process.env.CODEX_CI
     spawnMock.mockReset()
     getWorktreeDiffMock.mockReset()
     writeDoneMarkerMock.mockReset()
@@ -55,6 +57,8 @@ describe('CodexCLIAdapter', () => {
   })
 
   it('uses codex exec JSON mode and returns a successful result', async () => {
+    process.env.CODEX_THREAD_ID = 'thread-for-parent-session'
+    process.env.CODEX_CI = '1'
     const proc = makeProc()
     spawnMock.mockReturnValue(proc)
     getWorktreeDiffMock.mockResolvedValue('+ diff')
@@ -89,7 +93,14 @@ describe('CodexCLIAdapter', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       'codex',
       expect.arrayContaining(['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', expect.stringContaining('do the thing')]),
-      expect.objectContaining({ cwd: worktreePath, stdio: ['ignore', 'pipe', 'pipe'] }),
+      expect.objectContaining({
+        cwd: worktreePath,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: expect.not.objectContaining({
+          CODEX_THREAD_ID: expect.anything(),
+          CODEX_CI: expect.anything(),
+        }),
+      }),
     )
     expect(prompt).toContain('You are an ORC worker subagent running unattended inside a git worktree.')
     expect(prompt).toContain('Do not ask the user questions')
@@ -106,6 +117,8 @@ describe('CodexCLIAdapter', () => {
       diff: '+ diff',
       retryable: false,
     })
+    delete process.env.CODEX_THREAD_ID
+    delete process.env.CODEX_CI
   })
 
   it('emits periodic heartbeats while codex is still running', async () => {
