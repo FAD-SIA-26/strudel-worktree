@@ -64,7 +64,12 @@ Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 
 **The one invariant (MVP):** every state transition writes to `event_log` and updates the relevant projection in a single SQLite transaction.
 
-**For MVP**, Redis and the outbox are optional. The orchestrator runs in a single Node.js process; all coordination between Mastermind, Leads, and Workers uses in-process async queues. Redis and the outbox are added when you need multi-process coordination or live dashboard updates.
+**Redis is MVP.** The orchestrator runs in a single Node.js process. Lead↔Worker coordination uses in-process async queues. Redis is used for exactly three surfaces:
+1. **Dashboard live event stream** — `orchestration:broadcast` → WebSocket → browser
+2. **Mastermind → Lead command stream** — `lead:<id>:inbox`
+3. **Lead → Mastermind event stream** — `lead:<id>:events`
+
+The outbox is nice-to-have — Redis is always rebuilt from SQLite on boot and does not require the outbox for MVP correctness.
 
 ---
 
