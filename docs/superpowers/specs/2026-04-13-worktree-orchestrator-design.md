@@ -265,7 +265,7 @@ Best-effort continuation from persisted SQLite state. No Redis involved.
 3. Reconcile worktrees via **completion marker** (`.orc-done.json` in worktree root):
    - Marker `status: done` → emit `WorkerDone`, mark complete
    - Marker `status: failed` → treat as `WorkerFailed`, apply retry logic
-   - No marker + uncommitted changes → Codex was mid-run, re-spawn to continue
+   - No marker + uncommitted changes → treat as interrupted in-progress work; re-spawn with existing worktree state and prior session context
    - No marker + clean worktree → re-spawn from scratch
    - Worktree missing → re-create branch + worktree, re-spawn
 4. Mark in-flight workers as resumable / failed / retryable based on reconciliation
@@ -479,7 +479,7 @@ For a Worker: also shows health status + retry/abort controls.
 
 **Right panel [MVP]:** Live event stream from the in-memory event bus via WebSocket. Shows what every entity is doing in real time.
 
-**Top bar [MVP]:** Global orchestration status + natural language steering input (routes to Mastermind).
+**Top bar [MVP]:** Global orchestration status. Dashboard action buttons (Approve, Drop, Compare, Preview) are the primary steering path. Optional natural-language steering input may be exposed if implemented; it is not required for MVP.
 
 **Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Port pool: `PORT_POOL_START=3100`, size 50 (supports up to 50 simultaneous previews). Port assigned as `3100 + (worktree_index % 50)`, tracked in `previews` projection. For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
 
@@ -719,7 +719,7 @@ The watchdog is a background loop that monitors all workers in `running` or `spa
 
 ### Emitted events
 
-- `WorkerHealthy` — re-emitted every poll cycle while worker is `running` + active (heartbeat)
+- `WorkerHealthy` — **not** journaled to `event_log` on every poll cycle. Instead, the watchdog updates `last_seen_at` in the `runs` projection. A `WorkerHealthy` event is only emitted (and journaled) on transition *back* to healthy from `stalled` or `zombie`.
 - `WorkerStalled` — first time inactivity threshold exceeded; state transitions to `stalled`
 - `WorkerZombie` — process dead, no marker; state transitions to `zombie`
 - `WorkerRecovered` — worker was `stalled` but stdout resumed; transitions back to `running`
@@ -818,7 +818,7 @@ CREATE TABLE merge_queue (
 
 ### Key rules
 
-- Only one merge runs at a time. Mutex: SQLite `status='merging'` as in-process lock. FIFO by `created_at`.
+- Only one merge runs at a time. The coordinator claims the next pending merge via an atomic `UPDATE merge_queue SET status='merging' WHERE id=? AND status='pending'` before proceeding; in single-process MVP this acts as the queue lock. FIFO by `created_at`.
 - On conflict: coordinator pauses, Mastermind spawns a merge-fix worker. Other pending merges stay queued.
 - `conflict → fixing → retrying` is fully automated. User is not involved unless `maxMergeRetries` is exhausted.
 - On unrecoverable failure: Mastermind surfaces A/B/C choice to user (no code interaction).
@@ -861,8 +861,8 @@ Each orchestration level persists a markdown planning artifact used for context 
   rhythm-v1/
     .orc/
       worker-plan.md      # Worker owns
-      session.jsonl       # (existing — Codex output stream)
-      done.json           # (existing — completion marker)
+      .orc-session.jsonl  # (existing — Codex output stream)
+      .orc-done.json      # (existing — completion marker)
 ```
 
 ### Mastermind plan (`run-plan.md`) — full weight
