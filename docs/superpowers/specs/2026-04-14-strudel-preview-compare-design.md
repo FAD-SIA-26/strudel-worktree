@@ -122,6 +122,33 @@ Each artifact stores:
 
 These artifacts are cacheable and refreshable, but always derived from current code truth plus current winner state.
 
+### 3.4 Persistence strategy
+
+Preview artifacts are persisted in **SQLite projections**, not in memory.
+
+Phase 1 adds a dedicated projection table, for example:
+
+```sql
+preview_artifacts(
+  worker_id TEXT NOT NULL,
+  mode TEXT NOT NULL,                -- solo | contextual
+  preview_url TEXT NOT NULL,
+  generated_code TEXT NOT NULL,
+  source_files JSON NOT NULL,
+  context_winner_ids JSON NOT NULL,  -- [] for solo
+  generated_at INTEGER NOT NULL,
+  PRIMARY KEY(worker_id, mode)
+)
+```
+
+This is required so that:
+
+- launched previews survive dashboard refreshes
+- compare cards can show current preview availability after reconnect
+- `Refresh` has an explicit persisted target to overwrite
+
+The existing `previews` table may be replaced or evolved to support this shape, but phase 1 must end with persisted per-worker, per-mode preview artifacts in SQLite.
+
 ---
 
 ## 4. Preview Composition Rules
@@ -163,6 +190,43 @@ The rule is:
 
 That means the composer must transform modular source into inline runnable code.
 
+#### Concrete transformation rule
+
+For lane files, phase 1 supports exactly **one named export** that represents the lane pattern.
+
+Example input:
+
+```js
+export const drums = sound("bd hh").gain(0.8)
+```
+
+Expected `solo` output:
+
+```js
+const drums = sound("bd hh").gain(0.8)
+stack(drums)
+```
+
+Expected `contextual` output for a melody worker with existing upstream winners:
+
+```js
+const drums = sound("bd hh").gain(0.8)
+const bass = note("c2 c2 g1").sound("sawtooth")
+const chords = note("<[d4 f4 a4] [bb3 d4 f4]>").sound("triangle")
+const melody = note("a4 c5 d5").sound("sine")
+
+stack(drums, bass, chords, melody)
+```
+
+Rules:
+
+- `export` is removed and converted to `const`
+- `import` statements are resolved and eliminated
+- preview output must end in a runnable top-level Strudel expression
+- lane previews use `stack(...)` even for a single lane, so the output shape is consistent
+- files with multiple named exports are invalid phase-1 preview inputs and should return a structured preview-composition error
+- files with no detectable named lane export are invalid phase-1 preview inputs unless they are arrangement files handled by the arrangement path
+
 ### 4.3 Solo mode
 
 `solo` preview means:
@@ -181,6 +245,18 @@ For arrangement workers:
 
 - include the selected worker lane
 - include currently selected winner outputs from upstream dependencies, when available
+
+#### Dependency ownership
+
+The dependency graph lives in the rendered workflow template, not in `StrudelPreviewComposer`.
+
+For the current Strudel demo, that source of truth is `templates/strudel-track.toml` via each section's `depends_on` declarations.
+
+That means:
+
+- the composer reads dependency information from orchestration/template-derived section metadata
+- the composer does **not** hardcode lane order such as `drums -> bass -> chords -> melody`
+- adding a future music template should not require changing composer code just to describe dependencies
 
 Examples:
 
@@ -225,7 +301,7 @@ For `done` workers:
 
 - `Launch solo`
 - `Launch with context` when context exists
-- `Refresh`
+- `Refresh` (implemented as another `POST /api/preview/launch` call for the same `workerId` + `mode`)
 - `Pick winner`
 
 For non-terminal workers:
@@ -277,6 +353,11 @@ Replace that with preview artifact summaries per worker, for example:
 
 This should be summary-only. Full generated code may live behind a dedicated preview route if needed.
 
+This is a **types contract change**. `packages/types/src/api.ts` must evolve from the current single-`previewUrl` worker shape to include:
+
+- `selected: boolean`
+- preview artifact summaries keyed by mode
+
 ### 6.2 `POST /api/preview/launch`
 
 Current behavior accepts only `worktreeId`.
@@ -312,6 +393,8 @@ Semantics become:
 
 - `pick winner now`
 
+This is an intentional semantic change from the current loose “approve” button behavior. In phase 1, `approve` means “select this completed worker as the lead winner immediately”.
+
 Input remains lead + worker scoped, but the server contract changes from “queue a generic button action” to “route a lead-owned winner selection command”.
 
 The lead must:
@@ -319,6 +402,8 @@ The lead must:
 - validate the worker belongs to that lead
 - mark the winner
 - abort sibling workers still running
+
+Sibling aborts are delivered through the existing in-process `CommandQueue` mechanism already used by the orchestration runtime. Phase 1 does not introduce a second abort transport.
 
 ### 6.4 No dedicated preview-inspection route in phase 1
 
@@ -361,7 +446,7 @@ This state is needed for:
 
 After selecting a winner:
 
-- running sibling workers receive abort commands
+- running sibling workers receive `Abort` commands via the owning lead's existing command-queue path
 - if a sibling exits naturally before abort lands, that is acceptable
 - failure to abort a sibling must not unset the chosen winner
 
@@ -454,6 +539,7 @@ Required coverage for this phase:
 - `POST /api/preview/launch` for `solo`
 - `POST /api/preview/launch` for `contextual`
 - `POST /api/approve` selects winner through the lead
+- `POST /api/preview/launch` called repeatedly for the same `(workerId, mode)` overwrites the persisted artifact (`Refresh` behavior)
 
 ### 10.3 Lead tests
 
