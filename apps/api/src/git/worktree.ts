@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
@@ -57,6 +57,19 @@ export async function hasUncommittedChanges(wtPath: string): Promise<boolean> {
 /** Create a branch at HEAD without switching the working tree — safe when run mid-orchestration */
 export async function createBranch(repoRoot: string, branch: string): Promise<void> {
   await git(repoRoot, ['branch', branch])
+}
+
+export function findRepoRootSync(startDir: string): string {
+  return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: startDir, encoding: 'utf8' }).trim()
+}
+
+export function hasCommittedHeadSync(repoRoot: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**

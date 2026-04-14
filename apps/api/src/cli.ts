@@ -15,14 +15,21 @@ import { createLLMClientFromEnv } from './orchestrator/llm'
 import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
 import { seedSeqsFromDb } from './db/journal'
+import { findRepoRootSync, hasCommittedHeadSync } from './git/worktree'
 
-// Resolve orchestrator source root (apps/api/src/cli.ts → ../../..)
-const __filename = url.fileURLToPath(import.meta.url)
-const __dirname  = path.dirname(__filename)
-const REPO_ROOT  = path.resolve(__dirname, '../../..')
+function resolveRepoRoot(): string {
+  if (process.env.ORC_REPO_ROOT) return process.env.ORC_REPO_ROOT
+  try {
+    return findRepoRootSync(process.cwd())
+  } catch {
+    const __filename = url.fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    return path.resolve(__dirname, '../../..')
+  }
+}
 
-// DB lives in the TARGET repo (where orc is invoked), not in the orchestrator repo
-const DB_PATH = process.env.ORC_DB_PATH ?? path.join(process.cwd(), 'orc.db')
+const REPO_ROOT = resolveRepoRoot()
+const DB_PATH = process.env.ORC_DB_PATH ?? path.join(REPO_ROOT, 'orc.db')
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
 
 const program = new Command().name('orc').version('0.1.0')
@@ -36,11 +43,18 @@ program
     // orc requires a git repo — branches and worktrees are how it isolates parallel work
     try {
       const { execSync } = await import('node:child_process')
-      execSync('git rev-parse --git-dir', { cwd: process.cwd(), stdio: 'pipe' })
+      execSync('git rev-parse --git-dir', { cwd: REPO_ROOT, stdio: 'pipe' })
     } catch {
       console.error('[orc] error: not a git repository.')
       console.error('[orc] orc must be run from inside a git repo.')
       console.error('[orc] Run `git init && git commit -m "init"` first, or cd into an existing repo.')
+      process.exit(1)
+    }
+
+    if (!hasCommittedHeadSync(REPO_ROOT)) {
+      console.error('[orc] error: repository has no commits yet.')
+      console.error('[orc] orc needs an initial commit before it can create run branches and worktrees.')
+      console.error('[orc] Run `git add . && git commit -m "init"` in the target repo, then try again.')
       process.exit(1)
     }
 
@@ -57,7 +71,7 @@ program
     watchdog.start()
 
     const m = new MastermindStateMachine({
-      repoRoot:            process.cwd(),   // target repo where orc was invoked
+      repoRoot:            REPO_ROOT,
       db, governor:        gov,
       runId:               opts.runId,
       agentFactory:        opts.mock ? () => new MockAgent({ delayMs: 200, outcome: 'done' }) : () => new CodexCLIAdapter(),
