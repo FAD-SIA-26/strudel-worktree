@@ -17,6 +17,15 @@ export interface DashboardHandle {
   stop: () => void
 }
 
+class DashboardStartupError extends Error {
+  constructor(
+    message: string,
+    readonly output: string,
+  ) {
+    super(message)
+  }
+}
+
 function isPortOpen(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const socket = net.createConnection({ host: '127.0.0.1', port })
@@ -59,6 +68,27 @@ function waitForDashboard(url: string, timeoutMs = 20_000): Promise<void> {
   })
 }
 
+export function pickReusableDashboardUrl(output: string): string | null {
+  if (!output.includes('Another next dev server is already running')) return null
+  const matches = [...output.matchAll(/Local:\s+(https?:\/\/[^\s]+)/g)]
+  return matches.at(-1)?.[1] ?? null
+}
+
+export function pickDashboardCandidateUrls(output: string, preferredPort: number): string[] {
+  const matches = [...output.matchAll(/Local:\s+(https?:\/\/[^\s]+)/g)]
+    .map(match => match[1])
+    .filter((url): url is string => Boolean(url))
+
+  const candidates = [
+    pickReusableDashboardUrl(output),
+    `http://127.0.0.1:${preferredPort}`,
+    `http://localhost:${preferredPort}`,
+    ...matches,
+  ].filter((url): url is string => Boolean(url))
+
+  return [...new Set(candidates)]
+}
+
 function waitForDashboardUrl(proc: ChildProcess, timeoutMs = 20_000): Promise<string> {
   const startedAt = Date.now()
 
@@ -75,13 +105,13 @@ function waitForDashboardUrl(proc: ChildProcess, timeoutMs = 20_000): Promise<st
       }
       if (Date.now() - startedAt >= timeoutMs) {
         cleanup()
-        reject(new Error(`dashboard did not report a local URL\n${output}`))
+        reject(new DashboardStartupError('dashboard did not report a local URL', output))
       }
     }
 
     const onExit = () => {
       cleanup()
-      reject(new Error(`dashboard process exited before it became ready\n${output}`))
+      reject(new DashboardStartupError('dashboard process exited before it became ready', output))
     }
 
     const cleanup = () => {
@@ -96,13 +126,13 @@ function waitForDashboardUrl(proc: ChildProcess, timeoutMs = 20_000): Promise<st
 
     setTimeout(() => {
       cleanup()
-      reject(new Error(`dashboard did not report a local URL\n${output}`))
+      reject(new DashboardStartupError('dashboard did not report a local URL', output))
     }, timeoutMs)
   })
 }
 
-export async function ensureDashboardServer(opts: DashboardOptions): Promise<DashboardHandle> {
-  const preferredDashboardUrl = `http://localhost:${opts.dashboardPort}`
+async function startDashboardServer(opts: DashboardOptions): Promise<DashboardHandle> {
+  const preferredDashboardUrl = `http://127.0.0.1:${opts.dashboardPort}`
 
   if (await isPortOpen(opts.dashboardPort)) {
     return { process: null, url: preferredDashboardUrl, stop: () => {} }
@@ -112,6 +142,7 @@ export async function ensureDashboardServer(opts: DashboardOptions): Promise<Das
   const logPath = path.join(opts.stateDir, 'dashboard.log')
   const logStream = fs.createWriteStream(logPath, { flags: 'a' })
   const nextBin = path.join(opts.webRoot, 'node_modules', 'next', 'dist', 'bin', 'next')
+  let output = ''
 
   const proc = spawn(
     process.execPath,
@@ -135,9 +166,11 @@ export async function ensureDashboardServer(opts: DashboardOptions): Promise<Das
   )
 
   proc.stdout?.on('data', chunk => {
+    output += chunk.toString()
     logStream.write(chunk)
   })
   proc.stderr?.on('data', chunk => {
+    output += chunk.toString()
     logStream.write(chunk)
   })
 
@@ -148,7 +181,11 @@ export async function ensureDashboardServer(opts: DashboardOptions): Promise<Das
 
   try {
     const dashboardUrl = await waitForDashboardUrl(proc)
-    await waitForDashboard(dashboardUrl)
+    try {
+      await waitForDashboard(dashboardUrl)
+    } catch {
+      throw new DashboardStartupError(`dashboard did not become ready at ${dashboardUrl}`, output)
+    }
     return {
       process: proc,
       url: dashboardUrl,
@@ -157,5 +194,25 @@ export async function ensureDashboardServer(opts: DashboardOptions): Promise<Das
   } catch (error) {
     stop()
     throw error
+  }
+}
+
+export async function ensureDashboardServer(opts: DashboardOptions): Promise<DashboardHandle> {
+  try {
+    return await startDashboardServer(opts)
+  } catch (error) {
+    if (!(error instanceof DashboardStartupError)) throw error
+
+    for (const candidateUrl of pickDashboardCandidateUrls(error.output, opts.dashboardPort)) {
+      try {
+        await waitForDashboard(candidateUrl, 5_000)
+        return { process: null, url: candidateUrl, stop: () => {} }
+      } catch {
+        continue
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1_000))
+    return startDashboardServer(opts)
   }
 }

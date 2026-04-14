@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import * as fs from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { initTestRepo, cleanupTestRepo } from '../test-helpers/initTestRepo'
-import { createTestDb } from '../db/client'
+import { createTestDb, getSQLite } from '../db/client'
 import { ConcurrencyGovernor } from './concurrency'
 import { MockAgent } from '../agents/mock'
 import { WorkerStateMachine } from './worker'
@@ -68,5 +68,34 @@ describe('WorkerStateMachine', () => {
     const result = await worker.run({ id: 'rhythm-v2', prompt: 'Write rhythm', maxRetries: 1, errorHistory: [] })
     expect(result.status).toBe('failed')
     expect(gov.activeCount).toBe(0)
+  }, 15_000)
+
+  it('records heartbeats in the runs table for active workers', async () => {
+    repoDir = initTestRepo('worker-heartbeat-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+
+    class HeartbeatAgent implements WorkerAgent {
+      async run(_task: WorkerTask, ctx: WorkerContext): Promise<WorkerResult> {
+        await ctx.onHeartbeat?.({ ts: Date.now(), pid: 4321, output: 'still working' })
+        await fs.writeFile(`${ctx.worktreePath}/RESULT.txt`, 'heartbeat worker\n')
+        return { status: 'done', branch: ctx.branch, diff: '', retryable: false }
+      }
+      async abort(): Promise<void> {}
+    }
+
+    const worker = new WorkerStateMachine({
+      id: 'rhythm-v4', leadId: 'rhythm-lead', sectionId: 'rhythm',
+      branch: 'feat/rhythm-v4', baseBranch: 'main',
+      repoRoot: repoDir, runId: 'run-1', db, governor: gov,
+      agentFactory: () => new HeartbeatAgent(),
+    })
+
+    const result = await worker.run({ id: 'rhythm-v4', prompt: 'Write rhythm', maxRetries: 1, errorHistory: [] })
+
+    expect(result.status).toBe('done')
+    const runRow = getSQLite(db).prepare('SELECT pid, last_seen_at FROM runs WHERE entity_id=?').get('rhythm-v4') as { pid: number; last_seen_at: number }
+    expect(runRow.pid).toBe(4321)
+    expect(runRow.last_seen_at).toBeGreaterThan(0)
   }, 15_000)
 })

@@ -1,6 +1,6 @@
 import * as path from 'node:path'
-import type { WorkerTask, WorkerAgent } from '../agents/types'
-import type { Db } from '../db/client'
+import type { WorkerTask, WorkerAgent, WorkerHeartbeat } from '../agents/types'
+import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import { upsertTask, upsertWorktree } from '../db/queries'
 import { commitWorktreeChanges, createWorktree } from '../git/worktree'
@@ -32,6 +32,7 @@ export class WorkerStateMachine {
   readonly branch: string
   private agent: WorkerAgent | null = null
   private slotHeld = false
+  private lastHeartbeatEventAt = 0
 
   constructor(private readonly cfg: WorkerConfig) {
     this.id     = cfg.id
@@ -46,6 +47,26 @@ export class WorkerStateMachine {
     writeEvent(this.cfg.db, event, () => {
       upsertTask(this.cfg.db, this.cfg.id, 'worker', this.cfg.leadId, this.state)
     })
+  }
+
+  private recordHeartbeat(heartbeat: WorkerHeartbeat): void {
+    const now = heartbeat.ts ?? Date.now()
+    const sqlite = getSQLite(this.cfg.db)
+    sqlite.prepare(`
+      INSERT INTO runs(id,entity_id,adapter_type,pid,started_at,last_seen_at)
+      VALUES(?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET
+        adapter_type=excluded.adapter_type,
+        pid=COALESCE(excluded.pid, runs.pid),
+        last_seen_at=excluded.last_seen_at
+    `).run(this.cfg.id, this.cfg.id, 'worker', heartbeat.pid ?? null, now, now)
+    sqlite.prepare("UPDATE tasks SET state='running', updated_at=? WHERE id=?").run(now, this.cfg.id)
+
+    const output = heartbeat.output?.trim()
+    if (!output) return
+    if (now - this.lastHeartbeatEventAt < 5_000) return
+    this.lastHeartbeatEventAt = now
+    this.emit('WorkerProgress', { output: output.slice(0, 500), ts: now })
   }
 
   async run(task: WorkerTask): Promise<{ status: 'done'|'failed'; branch: string; diff?: string; error?: string }> {
@@ -73,6 +94,7 @@ export class WorkerStateMachine {
     })
 
     this.state = 'running'
+    this.recordHeartbeat({ ts: Date.now(), output: 'worker initialized' })
     this.emit('WorkerProgress', { output: 'agent started', ts: Date.now() })
 
     this.agent = this.cfg.agentFactory()
@@ -84,6 +106,7 @@ export class WorkerStateMachine {
       planPath,
       leadPlanPath: this.cfg.leadPlanPath ?? '',
       runPlanPath:  this.cfg.runPlanPath  ?? '',
+      onHeartbeat:  heartbeat => this.recordHeartbeat(heartbeat),
     })
 
     if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }

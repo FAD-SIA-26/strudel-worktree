@@ -21,6 +21,7 @@ interface MastermindConfig {
   db:          Db
   governor:    ConcurrencyGovernor
   runId:       string
+  baseBranch:  string
   agentFactory: () => WorkerAgent
   llmCall:     (prompt: string) => Promise<string>
   leadQueues?: Map<string, CommandQueue<OrcCommand>>
@@ -49,7 +50,7 @@ export class MastermindStateMachine {
     })
   }
 
-  async run(opts: { userGoal: string }): Promise<{ status: 'done'|'failed' }> {
+  async run(opts: { userGoal: string }): Promise<{ status: 'done'|'failed'; runBranch: string }> {
     if (this.cfg.maxConcurrentWorkers) configureGovernor(this.cfg.maxConcurrentWorkers)
 
     this.state = 'planning'
@@ -109,7 +110,7 @@ export class MastermindStateMachine {
         }
         this.state = 'failed'
         this.emit('OrchestrationFailed', { reason: 'circular or unresolvable section dependencies' })
-        return { status: 'failed' }
+        return { status: 'failed', runBranch }
       }
 
       batch.forEach(s => remaining.splice(remaining.indexOf(s), 1))
@@ -122,7 +123,7 @@ export class MastermindStateMachine {
           this.cfg.leadQueues?.set(leadId, leadCommandQueue)
           const lead = new LeadStateMachine({
             id: leadId, sectionId: section.id, sectionGoal: section.goal,
-            numWorkers: section.numWorkers, baseBranch: 'main',
+            numWorkers: section.numWorkers, baseBranch: this.cfg.baseBranch,
             runBranch: `run/${this.cfg.runId}`, runId: this.cfg.runId,
             repoRoot: this.cfg.repoRoot, db: this.cfg.db, governor: this.cfg.governor,
             agentFactory: this.cfg.agentFactory, llmCall: this.cfg.llmCall,
@@ -150,7 +151,7 @@ export class MastermindStateMachine {
     if (failures.length > 0) {
       this.state = 'failed'
       this.emit('OrchestrationFailed', { reason: `${failures.length} section(s) failed` })
-      return { status: 'failed' }
+      return { status: 'failed', runBranch }
     }
 
     this.state = 'merging'
@@ -183,11 +184,11 @@ export class MastermindStateMachine {
         ? `${mergeConflicts.length} merge conflict(s) unresolved`
         : `${mergeFailures.length} merge(s) failed: ${mergeFailures[0]}`
       this.emit('OrchestrationFailed', { reason })
-      return { status: 'failed' }
+      return { status: 'failed', runBranch }
     }
 
     this.state = 'done'
-    this.emit('OrchestrationComplete', { runBranch: `run/${this.cfg.runId}` })
-    return { status: 'done' }
+    this.emit('OrchestrationComplete', { runBranch })
+    return { status: 'done', runBranch }
   }
 }

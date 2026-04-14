@@ -16,7 +16,13 @@ import { createLLMClientFromEnv } from './orchestrator/llm'
 import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
 import { seedSeqsFromDb } from './db/journal'
-import { findRepoRootSync, hasCommittedHeadSync } from './git/worktree'
+import {
+  applyRunBranchToCurrentBranchSync,
+  findRepoRootSync,
+  getCurrentBranchSync,
+  getHeadShaSync,
+  hasCommittedHeadSync,
+} from './git/worktree'
 import { ensureDashboardServer } from './runtime/dashboard'
 import { getOrcAppRoots, getOrcPaths } from './runtime/paths'
 
@@ -77,6 +83,10 @@ program
       process.exit(1)
     }
 
+    const startingBranch = getCurrentBranchSync(REPO_ROOT)
+    const startingHead = getHeadShaSync(REPO_ROOT)
+    const baseBranch = startingBranch ?? startingHead
+
     await fs.mkdir(ORC_PATHS.stateDir, { recursive: true })
 
     const db     = initDb(DB_PATH)
@@ -107,6 +117,7 @@ program
       repoRoot:            REPO_ROOT,
       db, governor:        gov,
       runId:               opts.runId,
+      baseBranch,
       agentFactory:        opts.mock ? () => new MockAgent({ delayMs: 200, outcome: 'done' }) : () => new CodexCLIAdapter(),
       // In --mock mode, use a stub LLM that returns a sensible Strudel decomposition
       // so the demo works without an API key
@@ -136,6 +147,25 @@ program
     console.log(`[orc] run "${goal}" (run-id: ${opts.runId})`)
     const result = await m.run({ userGoal: goal })
     watchdog.stop()
+    if (result.status === 'done') {
+      if (startingBranch) {
+        const applied = applyRunBranchToCurrentBranchSync(REPO_ROOT, {
+          expectedBranch: startingBranch,
+          expectedHead: startingHead,
+          runBranch: result.runBranch,
+        })
+        if (applied.applied) {
+          console.log(`[orc] applied ${result.runBranch} to ${startingBranch}`)
+        } else {
+          console.warn(`[orc] warning: run completed but was not applied to ${startingBranch}: ${applied.reason}`)
+          console.warn(`[orc] preserved result branch: ${result.runBranch}`)
+          console.warn(`[orc] merged result worktree: ${path.join(ORC_PATHS.worktreesDir, `run-${opts.runId}`)}`)
+        }
+      } else {
+        console.warn('[orc] warning: run completed in detached HEAD state; result was not applied automatically.')
+        console.warn(`[orc] preserved result branch: ${result.runBranch}`)
+      }
+    }
     console.log(`[orc] orchestration ${result.status}`)
     unregisterCleanup()
     dashboard.stop()

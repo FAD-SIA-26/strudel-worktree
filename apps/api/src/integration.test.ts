@@ -23,7 +23,7 @@ describe('Full orchestration (MockAgent)', () => {
     eventBus.on('event', handler)
 
     const m = new MastermindStateMachine({
-      repoRoot: repoDir, db, governor: gov, runId: 'int-run',
+      repoRoot: repoDir, db, governor: gov, runId: 'int-run', baseBranch: 'main',
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Decompose')) return JSON.stringify([

@@ -33,10 +33,12 @@ import { CodexCLIAdapter } from './codex-cli'
 
 function makeProc() {
   const proc = new EventEmitter() as EventEmitter & {
+    pid: number
     stdout: EventEmitter
     stderr: EventEmitter
     kill: ReturnType<typeof vi.fn>
   }
+  proc.pid = 4242
   proc.stdout = new EventEmitter()
   proc.stderr = new EventEmitter()
   proc.kill = vi.fn()
@@ -45,6 +47,7 @@ function makeProc() {
 
 describe('CodexCLIAdapter', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     spawnMock.mockReset()
     getWorktreeDiffMock.mockReset()
     writeDoneMarkerMock.mockReset()
@@ -59,6 +62,7 @@ describe('CodexCLIAdapter', () => {
 
     const worktreePath = path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`)
     openMock.mockResolvedValue({ write: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) })
+    const onHeartbeat = vi.fn()
 
     const runPromise = new CodexCLIAdapter().run(
       { id: 'w1', prompt: 'do the thing', maxRetries: 1, errorHistory: [] },
@@ -70,23 +74,68 @@ describe('CodexCLIAdapter', () => {
         planPath: 'worker-plan.md',
         leadPlanPath: 'lead-plan.md',
         runPlanPath: 'run-plan.md',
+        onHeartbeat,
       },
     )
 
-    setImmediate(() => proc.emit('close', 0))
+    setImmediate(() => {
+      proc.stdout.emit('data', Buffer.from('worker output\n'))
+      proc.emit('close', 0)
+    })
 
     const result = await runPromise
+    const prompt = spawnMock.mock.calls[0]?.[1]?.[3]
 
     expect(spawnMock).toHaveBeenCalledWith(
       'codex',
       expect.arrayContaining(['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', expect.stringContaining('do the thing')]),
       expect.objectContaining({ cwd: worktreePath, stdio: ['ignore', 'pipe', 'pipe'] }),
     )
+    expect(prompt).toContain('You are an ORC worker subagent running unattended inside a git worktree.')
+    expect(prompt).toContain('Do not ask the user questions')
+    expect(prompt).toContain('Do not use brainstorming')
+    expect(prompt).toContain('Do not invoke process skills such as using-superpowers')
+    expect(prompt).toContain('Do not run pnpm install, npm install, yarn install')
+    expect(prompt).toContain('Update .orc/worker-plan.md')
+    expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), output: 'codex process started' }))
+    expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ output: 'worker output\n' }))
     expect(result).toEqual({
       status: 'done',
       branch: 'feat/w1',
       diff: '+ diff',
       retryable: false,
     })
+  })
+
+  it('emits periodic heartbeats while codex is still running', async () => {
+    vi.useFakeTimers()
+    const proc = makeProc()
+    spawnMock.mockReturnValue(proc)
+    getWorktreeDiffMock.mockResolvedValue('+ diff')
+    writeDoneMarkerMock.mockResolvedValue(undefined)
+    openMock.mockResolvedValue({ write: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) })
+
+    const onHeartbeat = vi.fn()
+    const runPromise = new CodexCLIAdapter().run(
+      { id: 'w2', prompt: 'keep going', maxRetries: 1, errorHistory: [] },
+      {
+        worktreePath: path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`),
+        branch: 'feat/w2',
+        baseBranch: 'main',
+        entityId: 'w2',
+        planPath: 'worker-plan.md',
+        leadPlanPath: 'lead-plan.md',
+        runPlanPath: 'run-plan.md',
+        onHeartbeat,
+      },
+    )
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    proc.emit('close', 0)
+    await runPromise
+
+    expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), output: 'codex process started' }))
+    expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), ts: expect.any(Number) }))
+    expect(onHeartbeat.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 })

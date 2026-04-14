@@ -99,6 +99,65 @@ export function hasCommittedHeadSync(repoRoot: string): boolean {
   }
 }
 
+export function getCurrentBranchSync(repoRoot: string): string | null {
+  try {
+    const branch = execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()
+    return branch || null
+  } catch {
+    return null
+  }
+}
+
+export function getHeadShaSync(repoRoot: string): string {
+  return execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim()
+}
+
+function getStatusEntriesSync(repoRoot: string): string[] {
+  return execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\n')
+    .map(line => line.slice(3).trim())
+    .filter(Boolean)
+}
+
+export function applyRunBranchToCurrentBranchSync(
+  repoRoot: string,
+  opts: { expectedBranch: string; expectedHead: string; runBranch: string },
+): { applied: boolean; reason?: string } {
+  const currentBranch = getCurrentBranchSync(repoRoot)
+  if (!currentBranch) {
+    return { applied: false, reason: 'repository is in detached HEAD state' }
+  }
+  if (currentBranch !== opts.expectedBranch) {
+    return { applied: false, reason: `current branch changed from ${opts.expectedBranch} to ${currentBranch}` }
+  }
+
+  const relevantChanges = getStatusEntriesSync(repoRoot)
+    .filter(entry => !entry.startsWith('.orc/'))
+  if (relevantChanges.length > 0) {
+    return { applied: false, reason: `repository has local changes: ${relevantChanges.slice(0, 3).join(', ')}` }
+  }
+
+  const currentHead = getHeadShaSync(repoRoot)
+  if (currentHead !== opts.expectedHead) {
+    return {
+      applied: false,
+      reason: `branch ${opts.expectedBranch} moved during the run (${opts.expectedHead.slice(0, 7)} -> ${currentHead.slice(0, 7)})`,
+    }
+  }
+
+  try {
+    execFileSync('git', ['merge', '--ff-only', opts.runBranch], { cwd: repoRoot, stdio: 'pipe' })
+    return { applied: true }
+  } catch (error: any) {
+    const stderr = typeof error?.stderr === 'string'
+      ? error.stderr.trim()
+      : Buffer.isBuffer(error?.stderr)
+        ? error.stderr.toString('utf8').trim()
+        : ''
+    return { applied: false, reason: stderr || error?.message || `failed to fast-forward ${opts.expectedBranch}` }
+  }
+}
+
 /**
  * Merge sourceBranch into the worktree at targetWorktreePath.
  * The caller must pass a worktree that is already checked out to the target branch.
