@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ORC Guide: How It Works</title>
+  <style>
+    :root {
+      --bg: #f6f2e9;
+      --paper: #fffdf8;
+      --ink: #1f2430;
+      --muted: #5f6673;
+      --line: #d9cfbd;
+      --accent: #125d98;
+      --accent-2: #8f4f20;
+      --ok: #25603b;
+      --warn: #8f5b00;
+      --danger: #8b2d2d;
+      --shadow: 0 16px 40px rgba(31, 36, 48, 0.08);
+      --radius: 18px;
+      --mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+      --sans: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, rgba(18, 93, 152, 0.09), transparent 28%),
+        radial-gradient(circle at top left, rgba(143, 79, 32, 0.09), transparent 24%),
+        linear-gradient(180deg, #f9f5ed 0%, var(--bg) 100%);
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 24px auto 48px;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 20px;
+    }
+
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .nav {
+      position: sticky;
+      top: 20px;
+      align-self: start;
+      padding: 18px;
+    }
+
+    .nav h1 {
+      margin: 0 0 6px;
+      font-size: 1.05rem;
+      line-height: 1.2;
+    }
+
+    .nav p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 0.93rem;
+      line-height: 1.45;
+    }
+
+    .nav a {
+      display: block;
+      padding: 8px 10px;
+      margin: 4px 0;
+      border-radius: 10px;
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 0.94rem;
+    }
+
+    .nav a:hover { background: rgba(18, 93, 152, 0.08); }
+
+    .content {
+      padding: 28px;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(18, 93, 152, 0.1);
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 1.6rem;
+      line-height: 1.15;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 1.08rem;
+    }
+
+    p, li {
+      font-size: 1rem;
+      line-height: 1.6;
+    }
+
+    p.lead {
+      font-size: 1.08rem;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    code, pre {
+      font-family: var(--mono);
+      font-size: 0.92rem;
+    }
+
+    code {
+      background: rgba(31, 36, 48, 0.06);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    pre {
+      background: #f5efe3;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      overflow: auto;
+      line-height: 1.5;
+    }
+
+    .callout {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #faf7f0;
+    }
+
+    .callout strong { color: var(--accent-2); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 16px 0;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: #fffefb;
+    }
+
+    .mini {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      margin: 4px 6px 4px 0;
+    }
+
+    .ok { background: rgba(37, 96, 59, 0.12); color: var(--ok); }
+    .warn { background: rgba(143, 91, 0, 0.12); color: var(--warn); }
+    .danger { background: rgba(139, 45, 45, 0.12); color: var(--danger); }
+    .info { background: rgba(18, 93, 152, 0.12); color: var(--accent); }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+      margin: 16px 0;
+    }
+
+    .steps li {
+      counter-increment: step;
+      margin: 0 0 14px;
+      padding: 14px 14px 14px 54px;
+      position: relative;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffefb;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .footer {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 960px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+      .nav {
+        position: static;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="panel nav">
+      <h1>ORC Guide</h1>
+      <p>Human-oriented explanation of the current spec in <code>docs/superpowers/specs/2026-04-13-worktree-orchestrator-design.md</code>.</p>
+      <a href="#big-picture">Big Picture</a>
+      <a href="#run-flow">Run Flow</a>
+      <a href="#roles">Roles</a>
+      <a href="#state">State Model</a>
+      <a href="#dashboard">Dashboard</a>
+      <a href="#runtime">Worker Runtime</a>
+      <a href="#watchdog">Watchdog</a>
+      <a href="#merge">Merge Path</a>
+      <a href="#recovery">Recovery</a>
+      <a href="#mvp">MVP Scope</a>
+    </aside>
+
+    <main class="panel content">
+      <span class="eyebrow">Spec Walkthrough</span>
+      <h2 id="big-picture">What ORC Is</h2>
+      <p class="lead">ORC is a single-process orchestration system that turns one user goal into a visible tree of parallel git-worktree-based Codex runs, then reviews, compares, previews, and merges the winning results.</p>
+
+      <div class="callout">
+        <strong>The shortest version:</strong> one <code>Mastermind</code> plans the run, one <code>Lead</code> owns each section, several Codex <code>workers</code> try variants in parallel, a <code>Reviewer</code> picks a winner, and a serialized <code>Merge Coordinator</code> integrates winners into a run branch.
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h3>What is durable?</h3>
+          <p>SQLite. The <code>event_log</code> records what happened, and projections record current state.</p>
+        </section>
+        <section class="card">
+          <h3>What is ephemeral?</h3>
+          <p>The in-memory command queues and event bus. They exist only while the Node process is running.</p>
+        </section>
+        <section class="card">
+          <h3>What is the real code artifact?</h3>
+          <p>Git worktrees and branches. Each worker owns a separate branch and isolated checkout.</p>
+        </section>
+        <section class="card">
+          <h3>What does the human do?</h3>
+          <p>Watch, compare, preview, approve, drop, and make high-level product decisions when automation gets stuck.</p>
+        </section>
+      </div>
+
+      <h2 id="run-flow">End-to-End Run Flow</h2>
+      <ol class="steps">
+        <li>
+          The user starts a run with something like <code>orc run "build a lo-fi track"</code>.
+          ORC creates a run identity and a dedicated integration branch such as <code>run/&lt;id&gt;</code>.
+        </li>
+        <li>
+          The <code>Mastermind</code> decomposes the goal into sections. If a workflow template matches, ORC uses that structure first; otherwise the Mastermind decomposes freely.
+        </li>
+        <li>
+          For each section, ORC creates a <code>Lead</code>. Each lead creates section-local worker prompts and spawns several parallel worker variants.
+        </li>
+        <li>
+          Each worker gets its own branch, its own worktree, its own plan file, and its own Codex process.
+        </li>
+        <li>
+          Workers emit progress and state changes. The dashboard updates live over WebSocket from the in-memory event bus.
+        </li>
+        <li>
+          The <code>Reviewer</code> compares successful worker outputs and picks one winner for the section.
+        </li>
+        <li>
+          The <code>Merge Coordinator</code> serializes merges into the run branch. If a merge conflicts, ORC spawns a bounded merge-fix worker instead of asking the user to touch code.
+        </li>
+        <li>
+          When all non-optional sections are complete and their merges are done, ORC fast-forwards the run branch to <code>main</code> and marks the orchestration complete.
+        </li>
+      </ol>
+
+      <h2 id="roles">Who Does What</h2>
+      <div class="grid">
+        <section class="card">
+          <h3>Mastermind</h3>
+          <p>Top-level orchestrator. Plans the run, creates leads, monitors overall progress, owns final completion/failure decisions.</p>
+        </section>
+        <section class="card">
+          <h3>Lead</h3>
+          <p>Owns one section. Runs the PM step, spawns workers, collects results, asks reviewer for a winner, requests merge.</p>
+        </section>
+        <section class="card">
+          <h3>PM Agent</h3>
+          <p>LLM planning step that turns a section goal into distinct worker prompts. It is not a long-lived process.</p>
+        </section>
+        <section class="card">
+          <h3>Worker</h3>
+          <p>The only real spawned Codex subprocess in the MVP. Works inside one isolated git worktree.</p>
+        </section>
+        <section class="card">
+          <h3>Reviewer</h3>
+          <p>LLM arbitration layer that chooses the best successful worker output for a section.</p>
+        </section>
+        <section class="card">
+          <h3>Merge-Fix Worker</h3>
+          <p>A bounded repair worker spawned only for code-level merge conflicts. It is not allowed to re-plan the product.</p>
+        </section>
+      </div>
+
+      <div class="callout">
+        <strong>Important distinction:</strong> in the MVP, <code>Mastermind</code> and <code>Lead</code> are orchestration roles inside the Node process. The main external spawned agents are Codex workers.
+      </div>
+
+      <h2 id="state">How State Actually Works</h2>
+      <h3>1. SQLite is the truth</h3>
+      <p>The system writes every meaningful state transition into <code>event_log</code>, then updates projection tables such as <code>tasks</code>, <code>runs</code>, <code>worktrees</code>, <code>merge_queue</code>, <code>previews</code>, and <code>artifacts</code>.</p>
+
+      <h3>2. Command transport and event fanout are separated</h3>
+      <div class="grid">
+        <section class="card">
+          <h3>Command Queues</h3>
+          <p class="mini">Transport only</p>
+          <p>In-memory per-role async queues. Used for downward commands such as Mastermind → Lead and Lead → Worker.</p>
+        </section>
+        <section class="card">
+          <h3>Event Bus</h3>
+          <p class="mini">Observability only</p>
+          <p>Publish-only in-memory event emitter. Used to fan out state changes to the dashboard after they are written to SQLite.</p>
+        </section>
+      </div>
+
+      <pre><code>SQLite transaction:
+  append event
+  update projection
+
+then:
+  publish same event to in-memory event bus
+  WebSocket broadcasts to browser clients</code></pre>
+
+      <h3>3. There are no direct worker-to-worker calls</h3>
+      <p>All cross-role interactions are visible as journaled events like <code>CommandIssued</code>, <code>WorkerProgress</code>, <code>ReviewComplete</code>, <code>MergeRequested</code>, <code>MergeConflict</code>, and <code>MergeResolved</code>.</p>
+
+      <h2 id="dashboard">What The Dashboard Shows</h2>
+      <div class="grid">
+        <section class="card">
+          <h3>Left Panel</h3>
+          <p>Orchestration tree: Mastermind → Leads → Workers, with live health badges.</p>
+        </section>
+        <section class="card">
+          <h3>Center Panel</h3>
+          <p>Selected entity details with tabs for Plan, Logs, Diff, and Preview.</p>
+        </section>
+        <section class="card">
+          <h3>Right Panel</h3>
+          <p>Live event stream sourced from the in-memory event bus over WebSocket.</p>
+        </section>
+        <section class="card">
+          <h3>Top Bar</h3>
+          <p>Global orchestration status. MVP steering is primarily explicit action buttons; natural-language steering is secondary/stretch.</p>
+        </section>
+      </div>
+
+      <h3>MVP user actions</h3>
+      <p>
+        <span class="status ok">Approve</span>
+        <span class="status danger">Drop</span>
+        <span class="status info">Compare</span>
+        <span class="status info">Preview</span>
+      </p>
+      <p>The human should not fix code manually. The dashboard is for inspection, choice, and control at the product level.</p>
+
+      <h2 id="runtime">What Happens Inside A Worker</h2>
+      <ol class="steps">
+        <li>A lead chooses a branch name like <code>feat/rhythm-v1</code> and creates a corresponding worktree under <code>.worktrees/</code>.</li>
+        <li>The worker gets a context bundle: task prompt, strategy, retry history, path to run plan, path to lead plan, path to worker plan.</li>
+        <li><code>CodexCLIAdapter</code> spawns a real <code>codex</code> subprocess in that worktree.</li>
+        <li>Output is appended to <code>.orc/.orc-session.jsonl</code> for retry/resume context.</li>
+        <li>On exit, the adapter writes <code>.orc/.orc-done.json</code> as the terminal marker.</li>
+      </ol>
+
+      <div class="callout">
+        <strong>Internal Codex subagents:</strong> the spec allows a worker to use Codex subagents internally, but the orchestrator treats that as one opaque worker run. Only top-level workers are scheduled and visible.
+      </div>
+
+      <h2 id="watchdog">How ORC Detects Trouble</h2>
+      <p>The watchdog runs every 5 seconds and derives worker health from three signals:</p>
+      <div class="grid">
+        <section class="card">
+          <h3>Stdout inactivity</h3>
+          <p>If no new progress appears for longer than the threshold, the worker becomes <code>stalled</code>.</p>
+        </section>
+        <section class="card">
+          <h3>PID liveness</h3>
+          <p>If the process is dead and no done marker exists, the worker becomes <code>zombie</code>.</p>
+        </section>
+        <section class="card">
+          <h3>Completion marker</h3>
+          <p>If <code>.orc/.orc-done.json</code> exists, the worker becomes terminal: <code>done</code> or <code>failed</code>.</p>
+        </section>
+      </div>
+
+      <p>Health states used in the UI:</p>
+      <p>
+        <span class="status info">queued</span>
+        <span class="status info">running</span>
+        <span class="status warn">stalled</span>
+        <span class="status danger">zombie</span>
+        <span class="status ok">done</span>
+        <span class="status danger">failed</span>
+      </p>
+
+      <h2 id="merge">How Merging Works</h2>
+      <p>ORC does <strong>not</strong> merge worker winners directly into <code>main</code>.</p>
+      <ol class="steps">
+        <li>The run starts its own integration branch: <code>run/&lt;orchestration-id&gt;</code>.</li>
+        <li>Each lead emits a <code>MergeRequest</code> for its winning worker.</li>
+        <li>The <code>Merge Coordinator</code> serializes merges FIFO into the run branch.</li>
+        <li>If a merge is clean, the queue continues.</li>
+        <li>If a merge conflicts, ORC spawns a <code>merge-fix worker</code> on a repair branch like <code>repair/&lt;merge-id&gt;-v1</code>.</li>
+        <li>If automated repair keeps failing, the human only makes a high-level choice:
+          retry another candidate, skip the section, or fail the orchestration.
+        </li>
+      </ol>
+
+      <div class="callout">
+        <strong>Important:</strong> the user never resolves code-level merge conflicts. ORC keeps the human at the product-decision layer, not the git-conflict layer.
+      </div>
+
+      <h2 id="recovery">How Resume / Recovery Works</h2>
+      <p><code>orc resume</code> is MVP best-effort continuation from SQLite plus worktree reconciliation.</p>
+      <ul>
+        <li>Load current projections from SQLite.</li>
+        <li>Inspect each worktree for <code>.orc/.orc-done.json</code>.</li>
+        <li>If the marker says <code>done</code> or <code>failed</code>, trust that terminal state.</li>
+        <li>If there is no marker but the worktree is dirty, treat it as interrupted in-progress work and resume with prior session context.</li>
+        <li>If there is no marker and the worktree is clean, restart from scratch.</li>
+      </ul>
+
+      <h2 id="mvp">What Is Actually MVP</h2>
+      <div class="grid">
+        <section class="card">
+          <h3>In MVP</h3>
+          <p>SQLite, worktrees, Codex workers, watchdog, dashboard, previews, compare/approve/drop controls, workflow templates, serialized merge coordinator, AI merge-fix worker.</p>
+        </section>
+        <section class="card">
+          <h3>Post-MVP</h3>
+          <p>Redis, outbox processor, distributed coordination, security agent, richer strategic retries, and stronger cross-lead context sharing.</p>
+        </section>
+      </div>
+
+      <h3>Useful mental model</h3>
+      <pre><code>User goal
+  -> Mastermind
+    -> Leads
+      -> parallel worker variants in isolated worktrees
+        -> Reviewer picks winners
+          -> Merge Coordinator integrates into run/&lt;id&gt;
+            -> run/&lt;id&gt; fast-forwards to main</code></pre>
+
+      <div class="footer">
+        Based on the current spec in <code>docs/superpowers/specs/2026-04-13-worktree-orchestrator-design.md</code>.
+        This guide is intentionally explanatory rather than normative.
+      </div>
+    </main>
+  </div>
+</body>
+</html>
