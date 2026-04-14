@@ -3056,7 +3056,7 @@ import type { SectionInfo, WorkerInfo } from '@orc/types'
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
 export function DetailPanel({ selectedId, sections }: { selectedId: string | null; sections: SectionInfo[] }) {
-  const [tab, setTab] = useState<'plan'|'logs'|'preview'>('plan')
+  const [tab, setTab] = useState<'compare'|'plan'|'logs'|'preview'>(isLead ? 'compare' : 'plan')
   if (!selectedId) return <div className="flex items-center justify-center h-full text-gray-600 text-sm">Select an entity from the tree</div>
 
   const isLead = selectedId.endsWith('-lead')
@@ -3262,12 +3262,16 @@ let repoDir: string
 afterAll(() => cleanupTestRepo(repoDir))
 
 describe('Full orchestration (MockAgent)', () => {
-  it('2 sections → 1 worker each → ReviewComplete → OrchestrationComplete', async () => {
+  it('5-lane Strudel template: drums+bass parallel, chords after bass, melody after chords, arrangement last', async () => {
     repoDir = initTestRepo('integration')
     const db  = createTestDb()
     const gov = new ConcurrencyGovernor(4)
     const emitted: string[] = []
-    const handler = (e: any) => emitted.push(e.eventType)
+    const leadDoneOrder: string[] = []
+    const handler = (e: any) => {
+      emitted.push(e.eventType)
+      if (e.eventType === 'LeadDone') leadDoneOrder.push(e.payload?.sectionId ?? e.entityId)
+    }
     eventBus.on('event', handler)
 
     const m = new MastermindStateMachine({
@@ -3275,11 +3279,16 @@ describe('Full orchestration (MockAgent)', () => {
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Decompose')) return JSON.stringify([
-          { id: 'rhythm', goal: 'Write rhythm', numWorkers: 1, dependsOn: [] },
-          { id: 'melody', goal: 'Write melody', numWorkers: 1, dependsOn: ['rhythm'] },
+          { id: 'drums',       goal: 'Write drum pattern',   numWorkers: 1, dependsOn: [] },
+          { id: 'bass',        goal: 'Write bass line',       numWorkers: 1, dependsOn: [] },
+          { id: 'chords',      goal: 'Write chord pattern',   numWorkers: 1, dependsOn: ['bass'] },
+          { id: 'melody',      goal: 'Write lead melody',     numWorkers: 1, dependsOn: ['chords'] },
+          { id: 'arrangement', goal: 'Write final arrangement', numWorkers: 1, dependsOn: ['drums','bass','chords','melody'] },
         ])
         if (p.includes('Generate')) return JSON.stringify(['write it'])
-        return JSON.stringify({ winnerId: 'rhythm-v1', reasoning: 'only one' })
+        // reviewer always picks v1
+        const match = p.match(/([\w-]+-v1)/)
+        return JSON.stringify({ winnerId: match?.[1] ?? 'drums-v1', reasoning: 'only one' })
       },
     })
 
@@ -3290,11 +3299,16 @@ describe('Full orchestration (MockAgent)', () => {
     expect(emitted).toContain('WorkerDone')
     expect(emitted).toContain('ReviewComplete')
     expect(emitted).toContain('OrchestrationComplete')
-    // melody should run after rhythm (depends_on respected)
-    const rhythmDone = emitted.indexOf('WorkerDone')
-    const leadDoneMelody = emitted.lastIndexOf('LeadDone')
-    expect(rhythmDone).toBeLessThan(leadDoneMelody)
-  }, 30_000)
+
+    // arrangement must be last (depends on all other sections)
+    expect(leadDoneOrder.at(-1)).toBe('arrangement')
+
+    // chords must come after bass
+    expect(leadDoneOrder.indexOf('chords')).toBeGreaterThan(leadDoneOrder.indexOf('bass'))
+
+    // melody must come after chords
+    expect(leadDoneOrder.indexOf('melody')).toBeGreaterThan(leadDoneOrder.indexOf('chords'))
+  }, 60_000)
 })
 ```
 
@@ -3365,4 +3379,3 @@ git commit -m "test: integration smoke test — 2 sections with depends_on, Mock
 - Worktree reconciliation on boot
 - Generic local dev-server preview
 - NL routing to entity queues
-- Compare tab in DetailPanel
