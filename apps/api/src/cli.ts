@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from 'commander'
 import * as http from 'node:http'
 import * as path from 'node:path'

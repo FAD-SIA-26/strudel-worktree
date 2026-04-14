@@ -3,12 +3,16 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "bin": {
+    "orc": "./bin/orc.cjs"
+  },
   "scripts": {
     "dev": "tsx watch src/cli.ts",
     "build": "tsc",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "orc": "tsx src/cli.ts"
   },
   "dependencies": {
     "@orc/types": "workspace:*",
