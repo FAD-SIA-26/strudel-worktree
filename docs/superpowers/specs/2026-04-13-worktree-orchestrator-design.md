@@ -38,6 +38,18 @@ A general-purpose agentic orchestration system. A single **Mastermind** agent de
 
 Built on TypeScript + Codex CLI. Agent-agnostic by interface design.
 
+**Technology stack:**
+| Layer | Technology |
+|---|---|
+| Monorepo | Turborepo |
+| Linting / formatting | Biome with ultracite config (shared across all packages) |
+| Backend | Express + Drizzle (SQLite ORM) + Zod |
+| Frontend (dashboard) | Next.js + TanStack Query + Zod |
+| Shared contracts | `@orc/types` — Zod schemas for all events, commands, API types |
+| Storage | SQLite (via Drizzle) + Redis |
+
+`@orc/types` is the contract between backend and frontend. Every event shape, command, and API request/response is a Zod schema defined once and imported by both sides.
+
 ---
 
 ## 2. Five-Layer Architecture [MVP core / nice-to-have edges]
@@ -97,6 +109,8 @@ The watchdog derives health from: stdout inactivity timer, OS process liveness c
 ---
 
 ## 4. SQLite Schema [MVP]
+
+Schema is defined and managed via **Drizzle ORM**. All table definitions live in `apps/api/src/db/schema.ts` as Drizzle schema objects. Migrations are generated with `drizzle-kit`. Raw SQL shown below for clarity; the Drizzle schema is the implementation source.
 
 ### 4.1 event_log (append-only journal)
 ```sql
@@ -363,39 +377,69 @@ Three-panel layout served by Express + WebSocket on port 4000 (default):
 
 **Preview launcher [MVP]:** one-click launch of a worktree's running app on localhost. Each worktree gets a port from a pool (tracked in the `previews` projection). For Strudel, this starts the Strudel dev server for that worktree so the user can hear the music directly from the dashboard. Port is shown on the worker card; clicking opens the preview in a new tab. Stopping the preview frees the port.
 
-Frontend: Vite + React. WebSocket client subscribes to dashboard server, which subscribes to Redis broadcast. This is why Redis moves to MVP alongside the dashboard.
+Frontend: **Next.js** (App Router). WebSocket client subscribes to dashboard server, which subscribes to Redis broadcast. TanStack Query handles REST data fetching for initial state hydration. All API request/response types imported from `@orc/types`. This is why Redis moves to MVP alongside the dashboard.
 
 ---
 
 ## 13. Project Structure [MVP layout]
 
-```
-src/
-  core/           # pure types — events, commands, states, types
-  db/             # journal.ts, queries.ts, projections/
-                  # outbox.ts (nice-to-have)
-  orchestrator/   # mastermind.ts, lead.ts, worker.ts, context.ts
-                  # recovery.ts (nice-to-have)
-  agents/         # types.ts (WorkerAgent interface), codex-cli.ts, mock.ts
-  redis/          # client.ts, streams.ts, broadcast.ts  [MVP — dashboard requires it]
-  git/            # worktree.ts, reconcile.ts
-  dashboard/      # server.ts, routes.ts, ws.ts           [MVP]
-  cli.ts          # entry point: orc run, orc status, orc resume
+Turborepo monorepo. Biome ultracite config shared across all packages via `packages/config`.
 
-frontend/                                                  [MVP]
-  src/components/ # TreePanel, DetailPanel, EventStream
-  vite.config.ts
+```
+turbo.json
+biome.json              # root — extends packages/config/biome.json
+package.json            # workspace root (pnpm workspaces)
+
+apps/
+  api/                  # Express backend: orchestrator + API server
+    src/
+      db/               # Drizzle schema, journal, queries, projections/
+                        # outbox.ts (nice-to-have)
+      orchestrator/     # mastermind.ts, lead.ts, worker.ts, context.ts
+                        # recovery.ts (nice-to-have)
+      agents/           # WorkerAgent interface, codex-cli.ts, mock.ts
+      redis/            # client.ts, streams.ts, broadcast.ts
+      git/              # worktree.ts, reconcile.ts
+      server/           # Express app, routes, WebSocket handler
+      cli.ts            # orc run, orc status, orc resume
+    drizzle.config.ts
+    package.json
+
+  web/                  # Next.js dashboard (App Router)
+    src/
+      app/              # Next.js app dir — pages + layout
+      components/       # TreePanel, DetailPanel, EventStream, WorkerCard
+      hooks/            # useOrchestration, useWorkerHealth (TanStack Query)
+      ws/               # WebSocket client
+    package.json
+
+packages/
+  types/                # @orc/types — shared Zod schemas (source of truth)
+    src/
+      events.ts         # all event shapes
+      commands.ts       # all command shapes
+      api.ts            # REST request/response schemas
+      db.ts             # Drizzle table type exports
+    package.json
+
+  config/               # @orc/config — shared Biome ultracite config
+    biome.json
+    package.json
 
 skills/
   mastermind.md · lead.md · pm-agent.md · implementer.md · reviewer.md  # MVP
   security.md · patch-worker.md                                          # post-MVP
 
 templates/
-  strudel-track.toml    # MVP — Strudel demo template
+  strudel-track.toml    # MVP
   # future: rest-api.toml, react-app.toml, ...
 
 docs/superpowers/specs/
 ```
+
+**Package dependency rule:** `apps/*` import from `packages/*`. `packages/types` imports nothing internal. `packages/config` is devDependency only. No circular deps.
+
+**Zod as the contract:** every event, command, and API type is a Zod schema in `@orc/types`. Backend uses it for runtime validation; frontend for type-safe API calls. New event = one Zod schema added — both sides stay in sync.
 
 ---
 
