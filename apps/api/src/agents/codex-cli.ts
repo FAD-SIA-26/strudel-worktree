@@ -19,13 +19,24 @@ export class CodexCLIAdapter implements WorkerAgent {
     ].join('')
 
     return new Promise<WorkerResult>(resolve => {
-      this.proc = spawn('codex', ['--prompt', prompt, '--json'], { cwd: ctx.worktreePath, env: { ...process.env } })
+      const stderr: string[] = []
+      this.proc = spawn('codex', ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox', prompt], {
+        cwd: ctx.worktreePath,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
 
       this.proc.stdout?.on('data', async (chunk: Buffer) => {
         const line = chunk.toString()
         await session.write(JSON.stringify({ ts: Date.now(), output: line }) + '\n')
         eventBus.publish({ entityId: ctx.entityId, entityType: 'worker', eventType: 'WorkerProgress',
           sequence: nextSeq(ctx.entityId), ts: Date.now(), payload: { output: line, ts: Date.now() } } as any)
+      })
+
+      this.proc.stderr?.on('data', async (chunk: Buffer) => {
+        const line = chunk.toString()
+        stderr.push(line)
+        await session.write(JSON.stringify({ ts: Date.now(), error: line }) + '\n')
       })
 
       const finish = async (code: number | null) => {
@@ -35,11 +46,15 @@ export class CodexCLIAdapter implements WorkerAgent {
         if (status === 'done') {
           resolve({ status: 'done', branch: ctx.branch, diff: await getWorktreeDiff(ctx.worktreePath, ctx.baseBranch), retryable: false })
         } else {
-          resolve({ status: 'failed', branch: ctx.branch, error: `exit code ${code}`, retryable: true })
+          const details = stderr.join('').trim()
+          resolve({ status: 'failed', branch: ctx.branch, error: details ? `exit code ${code}: ${details}` : `exit code ${code}`, retryable: true })
         }
       }
       this.proc.on('close', finish)
-      this.proc.on('error', async err => { await session.close(); resolve({ status: 'failed', branch: ctx.branch, error: err.message, retryable: true }) })
+      this.proc.on('error', async err => {
+        await session.close()
+        resolve({ status: 'failed', branch: ctx.branch, error: err.message, retryable: true })
+      })
     })
   }
 
