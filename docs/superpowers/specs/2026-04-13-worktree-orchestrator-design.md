@@ -166,6 +166,7 @@ Maps 1:1 to worktree paths (`.worktrees/rhythm-v1`). Readable with `git branch -
 - **task_edges** *(likely extra)* — parent_id, child_id, dependency type, `retry_of`
 - **previews** — worktree_id, port, url, status, launched_at  *(MVP — required by preview launcher)*
 - **agent_sessions** *(likely extra)* — entity_id, adapter, pid, status
+- **artifacts** — entity_id, artifact_type (`run_plan|lead_plan|worker_plan`), path, updated_at *(used by dashboard for Plan tab linking)*
 
 ### 4.3 outbox (pending side effects) [nice-to-have]
 
@@ -305,6 +306,9 @@ interface WorkerContext {
   branch: string
   baseBranch: string
   entityId: string
+  planPath: string        // path to .orc/worker-plan.md inside worktreePath
+  leadPlanPath: string    // path to the owning lead's plan (read-only context)
+  runPlanPath: string     // path to the mastermind run plan (read-only context)
 }
 
 interface WorkerResult {
@@ -461,9 +465,14 @@ Three-panel layout served by Express + WebSocket on port 4000 (default):
 
 **Left panel [MVP]:** Orchestration tree — Mastermind → Leads → Workers. Live status badges using the health taxonomy (queued / running / stalled / zombie / done / failed). Expandable per lead.
 
-**Center panel [MVP]:** Selected entity detail.
-- For a Lead: reviewer verdict, side-by-side diff comparison of worker variations, **Approve / Drop / Spawn another** action buttons.
-- For a Worker: agent output log, health status, retry/abort controls.
+**Center panel [MVP]:** Selected entity detail, with tabs:
+- **Plan** — the entity's markdown plan file (run-plan / lead-plan / worker-plan). Human-readable task checklist, objective, constraints, progress notes.
+- **Logs** — agent stdout stream / WorkerProgress events.
+- **Diff** — git diff of the worktree vs base branch.
+- **Preview** — launch/stop the worktree's dev server.
+
+For a Lead: also shows reviewer verdict + side-by-side diff comparison of worker variations + **Approve / Drop / Spawn another** action buttons.
+For a Worker: also shows health status + retry/abort controls.
 
 **Right panel [MVP]:** Live event stream from the in-memory event bus via WebSocket. Shows what every entity is doing in real time.
 
@@ -550,8 +559,10 @@ skills/
   security.md · patch-worker.md                                          # post-MVP
 
 templates/
-  strudel-track.toml    # MVP
-  # future: rest-api.toml, react-app.toml, ...
+  strudel-track.toml    # MVP — workflow decomposition template
+  run-plan.md           # MVP — Mastermind plan file template
+  lead-plan.md          # MVP — Lead section plan template
+  worker-plan.md        # MVP — Worker task sheet template (lightweight)
 
 docs/superpowers/specs/
 ```
@@ -804,3 +815,182 @@ CREATE TABLE merge_queue (
 - `conflict → fixing → retrying` is fully automated. User is not involved unless `maxMergeRetries` is exhausted.
 - On unrecoverable failure: Mastermind surfaces A/B/C choice to user (no code interaction).
 - On non-conflict git error (e.g. missing branch): mark `failed`, notify Mastermind, continue queue.
+
+---
+
+## 19. Planning Artifacts / Task Tracking [MVP]
+
+Each orchestration level persists a markdown planning artifact used for context management, task tracking, and human inspection.
+
+**Key principle:** markdown plans are **execution memory**, not system truth. SQLite (`event_log` + projections) remains authoritative. Plans exist to improve context compression, parent/child handoff quality, retry determinism, and human inspectability in the dashboard.
+
+### Ownership and level
+
+| Level | Owner | File | Weight |
+|---|---|---|---|
+| Mastermind | run-level | `.orc/runs/<run-id>/run-plan.md` | Full — goal, architecture, decomposition, dependencies, success criteria |
+| Lead | section-level | `.orc/runs/<run-id>/leads/<section-id>.md` | Medium — section objective, worker variants, review criteria, boundaries |
+| Worker | worktree-local | `.worktrees/<worker-id>/.orc/worker-plan.md` | Light — checklist, constraints, progress notes, result summary |
+
+### File layout
+
+```
+.orc/
+  runs/
+    <run-id>/
+      run-plan.md         # Mastermind owns, updates at section boundaries
+      leads/
+        rhythm.md         # Lead owns
+        harmony.md
+        melody.md
+
+.worktrees/
+  rhythm-v1/
+    .orc/
+      worker-plan.md      # Worker owns
+      session.jsonl       # (existing — Codex output stream)
+      done.json           # (existing — completion marker)
+```
+
+### Mastermind plan (`run-plan.md`) — full weight
+
+```markdown
+# Run Plan — <goal>
+
+> Workers: read this before creating lead and worker plans.
+
+**Goal:** <user goal>
+**Run ID:** <run-id>
+**Merge target:** run/<run-id> → main at completion
+
+## Architecture
+<brief description of how sections fit together>
+
+## Tech Stack
+TypeScript · Express · Next.js · SQLite · Drizzle · Zod
+
+## Success Criteria
+- [ ] all sections integrated into run/<run-id>
+- [ ] preview launches
+- [ ] tests pass
+
+## Sections & Dependencies
+- rhythm — no deps
+- harmony — depends on rhythm
+- melody — depends on rhythm + harmony
+- arrangement — depends on all
+
+## Integration Notes
+- merge target is run/<run-id>, not main
+- avoid unrelated refactors
+- prefer minimal blast radius
+
+## Status
+- rhythm: running
+- harmony: queued
+- melody: queued
+- arrangement: queued
+```
+
+### Lead plan (`leads/<section-id>.md`) — medium weight
+
+```markdown
+# Lead Plan — <section-id>
+
+**Parent plan:** `.orc/runs/<run-id>/run-plan.md`
+**Section goal:** <objective>
+
+## Acceptance Criteria
+- <criterion 1>
+- <criterion 2>
+
+## Files / Boundaries
+- likely: src/instruments/<section>.ts
+
+## Dependency Inputs
+- rhythm.winner_diff: <path or pending>
+
+## Worker Variants
+- <section>-v1: <strategy description>
+- <section>-v2: <alternative strategy>
+
+## Review Criteria
+- correctness
+- minimal blast radius
+- passes tests
+- safe to merge
+
+## Status
+- <section>-v1: running
+- <section>-v2: running
+
+## Notes
+_lead decisions and observations_
+```
+
+### Worker plan (`worker-plan.md`) — lightweight
+
+```markdown
+# Worker Plan — <worker-id>
+
+**Lead plan:** `.orc/runs/<run-id>/leads/<section-id>.md`
+**Objective:** <specific assigned objective>
+**Strategy:** <approach hint from PM agent>
+
+## Acceptance Criteria
+- [ ] <criterion 1>
+- [ ] <criterion 2>
+- [ ] tests pass
+- [ ] no unrelated files changed
+
+## Files Likely To Change
+- <file 1>
+- <file 2>
+
+## Constraints
+- avoid refactoring unrelated code
+- preserve existing conventions
+
+## Checklist
+- [ ] inspect current structure
+- [ ] implement
+- [ ] validate
+- [ ] summarize
+
+## Progress Notes
+_empty_
+
+## Blockers
+_none_
+
+## Result Summary
+_pending_
+```
+
+### Update discipline
+
+Plans are not freeform diaries. Each level has bounded update points:
+
+- **Mastermind plan** — updated at section boundaries and major decisions only
+- **Lead plan** — updated on worker spawn, worker completion, reviewer decision, retry
+- **Worker plan** — updated at start, after planning, after major step, before finish, on error
+
+### Context flow on retry
+
+When a worker retries, the new worker receives:
+1. The failed worker's `worker-plan.md` (what was attempted, what blocked it)
+2. The failed worker's `session.jsonl` summary (what Codex actually did)
+3. The lead plan (section constraints and acceptance criteria)
+4. A new `worker-plan.md` pre-filled with inherited context + new strategy
+
+This is significantly better than rebuilding context from raw event history.
+
+### Plan review (optional)
+
+A lightweight plan review pass may run after Mastermind writes the run plan and after each Lead writes its section plan. It checks:
+- Is the objective clear?
+- Are acceptance criteria concrete?
+- Are dependencies correct?
+- Is scope reasonable?
+
+Workers do not get a full plan review — their task sheet is validated structurally (fields present, checklist non-empty) rather than reviewed by an LLM.
