@@ -1,15 +1,21 @@
-import { z } from 'zod'
+import { z } from "zod";
 
-export const EntityTypeSchema = z.enum(['mastermind','lead','worker','pm','reviewer'])
-export type EntityType = z.infer<typeof EntityTypeSchema>
+export const EntityTypeSchema = z.enum([
+  "mastermind",
+  "lead",
+  "worker",
+  "pm",
+  "reviewer",
+]);
+export type EntityType = z.infer<typeof EntityTypeSchema>;
 
 const base = z.object({
-  entityId:   z.string(),
+  entityId: z.string(),
   entityType: EntityTypeSchema,
-  sequence:   z.number().int().nonnegative(),
-  ts:         z.number().int(),
-  payload:    z.record(z.unknown()),
-})
+  sequence: z.number().int().nonnegative(),
+  ts: z.number().int(),
+  payload: z.record(z.unknown()),
+});
 
 export const WorkerProgressSchema  = base.extend({ eventType: z.literal('WorkerProgress'),  payload: z.object({ output: z.string(), ts: z.number() }) })
 export const WorkerDoneSchema      = base.extend({ eventType: z.literal('WorkerDone'),      payload: z.object({ branch: z.string(), diff: z.string() }) })

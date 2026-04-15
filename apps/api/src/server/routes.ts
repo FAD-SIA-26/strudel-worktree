@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs'
 import * as path from 'node:path'
 import { Router } from 'express'
-import type { AppDeps } from './app'
+import { getSQLite } from '../db/client'
 import { getAllTasks, getWorktrees, getPreviews, getMergeCandidates, getTaskEdges, getArtifactPath } from '../db/queries'
 import { launchPreview, launchRunPreview, stopPreview } from '../orchestrator/preview'
+import type { AppDeps } from './app'
 import { getEntityDetail } from './entityDetails'
 import { readLeadLogWindow, readWorkerLogWindow, streamLeadLogs, streamWorkerLogs } from './entityLogs'
 
@@ -91,7 +92,7 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
   })
 
   r.get('/events', (_req, res) => {
-    const sqlite = (db as any).session.client
+    const sqlite = getSQLite(db)
     res.json({ events: sqlite.prepare('SELECT * FROM event_log ORDER BY id DESC LIMIT 100').all() })
   })
 

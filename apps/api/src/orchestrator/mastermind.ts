@@ -107,14 +107,10 @@ export class MastermindStateMachine {
     }
 
     const runBranch = `run/${this.cfg.runId}`
-    // Create the run branch without switching the main working tree
     await createBranch(this.cfg.repoRoot, runBranch).catch(err => {
       if (!err.message?.includes('already exists')) throw err
     })
 
-    // Create a dedicated worktree for the run branch — all merges happen there,
-    // never touching the main working directory.
-    // Branch already exists (created above), so use addWorktreeForBranch (no -b flag)
     const runWtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, `run-${this.cfg.runId}`)
     await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch, { hydrateDependencies: false }).catch(err => {
       if (!err.message?.includes('already exists') && !err.message?.includes('is already checked out')) throw err
@@ -194,7 +190,6 @@ export class MastermindStateMachine {
     }
 
     this.state = 'merging_lanes'
-    // Merges happen in the dedicated run worktree — the main worktree is never affected
     const doMerge = this.cfg.doMerge ?? ((_target, source) => mergeBranch(runWtPath, source))
     const mergeConflicts: string[] = []
     const mergeFailures: string[] = []

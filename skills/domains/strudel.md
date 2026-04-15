@@ -10,7 +10,8 @@ Follow these rules for Strudel tasks in this lane.
 
 ## Export One Lane
 
-- Each lane should export exactly one default lane pattern.
+- Each lane file should export exactly one named lane pattern: `export const <lane> = <pattern>`.
+- Match the exported name to the lane file, for example `src/bass.js` must export `bass`.
 - Keep the lane focused: rhythm lane exports rhythm, bass lane exports bass, melody lane exports melody.
 - If you need variations, do them inside the lane expression and still export one lane result.
 
@@ -36,21 +37,21 @@ Follow these rules for Strudel tasks in this lane.
 Good lane file:
 
 ```js
-const groove = s("bd ~ sd ~").bank("RolandTR909")
-export default groove
+export const drums = s("bd ~ sd ~").bank("RolandTR909")
 ```
 
 Bad lane file (cross-lane + import):
 
 ```js
-import bass from "./bass.js"
-export default stack(s("bd ~ sd ~"), bass)
+import { bass } from "./bass.js"
+export const drums = stack(s("bd ~ sd ~"), bass)
 ```
 
 Good arrangement in `src/index.js`:
 
 ```js
-import drums from "./lanes/drums.js"
-import bass from "./lanes/bass.js"
-export default stack(drums, bass)
+import { drums } from "./drums.js"
+import { bass } from "./bass.js"
+
+stack(drums, bass)
 ```

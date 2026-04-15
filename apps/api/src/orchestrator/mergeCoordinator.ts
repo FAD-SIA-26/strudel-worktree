@@ -47,9 +47,9 @@ export class MergeCoordinator {
           sequence: nextSeq('mastermind'), ts: Date.now(), payload: { mergeId, conflictFiles: r.conflictFiles } } as OrcEvent, () => {})
         this.cfg.onConflict?.(mergeId, r.conflictFiles)
       }
-    } catch (err: any) {
+    } catch (error: unknown) {
       sqlite.prepare("UPDATE merge_queue SET status='failed' WHERE lead_id=? AND winner_worktree_id=?").run(req.leadId, req.worktreeId)
-      this.cfg.onFailed?.(mergeId, err.message)
+      this.cfg.onFailed?.(mergeId, error instanceof Error ? error.message : String(error))
     } finally {
       this.processing = false
     }

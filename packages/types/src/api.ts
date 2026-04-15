@@ -4,7 +4,6 @@ export const PreviewArtifactSummarySchema = z.object({
   mode: z.enum(['solo', 'contextual']),
   previewUrl: z.string(),
 })
-
 export const WorkerInfoSchema = z.object({
   id: z.string(),
   state: z.string(),

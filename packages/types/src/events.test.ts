@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { OrcEventSchema } from './events'
+import { describe, expect, it } from "vitest";
+import { OrcEventSchema } from "./events";
 
 describe('OrcEventSchema', () => {
   it('parses WorkerDone', () => {

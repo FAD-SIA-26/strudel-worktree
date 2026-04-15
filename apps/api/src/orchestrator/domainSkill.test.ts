@@ -76,4 +76,20 @@ describe('domain skill resolution', () => {
     const repoRoot = await makeRepo()
     await expect(resolveDomainSkill(repoRoot, 'unknown-skill')).rejects.toThrow(/Unknown skill/)
   })
+
+  it('falls back to bundled assets when the target repo does not contain skills or templates', async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-domain-skill-fallback-'))
+
+    const skill = await resolveDomainSkill(repoRoot, 'strudel')
+    const templatePath = await resolveTemplateSelection({
+      repoRoot,
+      userGoal: 'write a track',
+      skillName: 'strudel',
+    })
+
+    expect(skill).not.toBeNull()
+    expect(skill?.filePath).toContain(path.join('skills', 'domains', 'strudel.md'))
+    expect(skill?.content.length).toBeGreaterThan(0)
+    expect(templatePath).toContain(path.join('templates', 'strudel-track.toml'))
+  })
 })

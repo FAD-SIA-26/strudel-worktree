@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { resolveOrcAssetPath } from '../runtime/paths'
 
 const DOMAIN_SKILLS = {
   strudel: {
@@ -15,6 +16,17 @@ export interface ResolvedDomainSkill {
   filePath: string
   content: string
   defaultTemplateName: string
+}
+
+async function findReadablePath(primaryPath: string, fallbackPath?: string): Promise<string> {
+  try {
+    await fs.access(primaryPath)
+    return primaryPath
+  } catch {
+    if (!fallbackPath) throw new Error(`Missing required asset at ${primaryPath}`)
+    await fs.access(fallbackPath)
+    return fallbackPath
+  }
 }
 
 function autoDetectTemplateName(userGoal: string): string | undefined {
@@ -33,7 +45,9 @@ export async function resolveDomainSkill(repoRoot: string, skillName?: string): 
     )
   }
 
-  const filePath = path.join(repoRoot, record.relativePath)
+  const repoPath = path.join(repoRoot, record.relativePath)
+  const bundledPath = resolveOrcAssetPath(import.meta.url, record.relativePath)
+  const filePath = await findReadablePath(repoPath, bundledPath)
   const content = await fs.readFile(filePath, 'utf8')
 
   return {
@@ -51,12 +65,18 @@ export async function resolveTemplateSelection(opts: {
   skillName?: string
 }): Promise<string | undefined> {
   if (opts.explicitTemplateName) {
-    return path.join(opts.repoRoot, 'templates', `${opts.explicitTemplateName}.toml`)
+    return findReadablePath(
+      path.join(opts.repoRoot, 'templates', `${opts.explicitTemplateName}.toml`),
+      resolveOrcAssetPath(import.meta.url, 'templates', `${opts.explicitTemplateName}.toml`),
+    )
   }
 
   const skill = await resolveDomainSkill(opts.repoRoot, opts.skillName)
   const templateName = skill?.defaultTemplateName ?? autoDetectTemplateName(opts.userGoal)
 
   if (!templateName) return undefined
-  return path.join(opts.repoRoot, 'templates', `${templateName}.toml`)
+  return findReadablePath(
+    path.join(opts.repoRoot, 'templates', `${templateName}.toml`),
+    resolveOrcAssetPath(import.meta.url, 'templates', `${templateName}.toml`),
+  )
 }

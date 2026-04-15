@@ -1,0 +1,46 @@
+name: Tag Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag Version Bumps
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version change
+        id: version
+        run: |
+          CURRENT_VERSION="$(node -p "require('./package.json').version")"
+          PREVIOUS_VERSION="$(git show "${{ github.event.before }}:package.json" 2>/dev/null | node -p "const fs=require('node:fs'); const pkg=JSON.parse(fs.readFileSync(0, 'utf8')); pkg.version" 2>/dev/null || true)"
+          echo "current=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS_VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREVIOUS_VERSION" ] && [ "$CURRENT_VERSION" != "$PREVIOUS_VERSION" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          TAG="v${{ steps.version.outputs.current }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"

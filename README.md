@@ -6,6 +6,59 @@ Built for the hackathon on top of Codex CLI. Ships with a Strudel.js music demo 
 
 ---
 
+## Single-package release
+
+This repo now produces one installable tarball from the workspace root instead of requiring consumers to understand the monorepo layout.
+
+Versioning is handled with Changesets:
+
+- PRs build a preview tarball with a prerelease version like `0.1.1-pr.42.abc1234`
+- `main` creates or updates a release PR with the correct semver bump
+- Merging the release PR auto-tags `vX.Y.Z`
+- The tag triggers the GitHub release workflow and uploads the final `.tgz`
+
+Build it locally:
+
+```bash
+pnpm install
+pnpm pack:github
+```
+
+That writes a single file to `.artifacts/`, for example:
+
+```bash
+.artifacts/worktree-orchestrator-0.1.0.tgz
+```
+
+Install that tarball directly:
+
+```bash
+npm install -g ./.artifacts/worktree-orchestrator-0.1.0.tgz
+orc --version
+```
+
+For GitHub releases, you normally do not push tags manually anymore. Merge the Changesets-generated release PR and the `Tag Release` workflow will create `vX.Y.Z` for you. That tag triggers the `Release Package` workflow, which attaches the final tarball to the GitHub release.
+
+```bash
+git checkout -b feat/something
+pnpm changeset
+git add .
+git commit -m "feat: add something"
+git push origin HEAD
+```
+
+To add a version bump in a PR:
+
+```bash
+pnpm changeset
+```
+
+Pick `patch`, `minor`, or `major` for `worktree-orchestrator` and commit the generated markdown file under `.changeset/`.
+
+The packaged install ships the CLI, templates, and skills. The Next.js dashboard is still source-repo-only for now and is disabled when running from the packaged tarball.
+
+---
+
 ## How it works
 
 ```

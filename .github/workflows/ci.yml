@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run lint
+        run: pnpm lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run build
+        run: pnpm build
+
+  codex-review:
+    name: Codex Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+
+      - name: Pre-fetch base and head refs
+        run: |
+          git fetch --no-tags origin \
+            ${{ github.event.pull_request.base.ref }} \
+            +refs/pull/${{ github.event.pull_request.number }}/head
+
+      - name: Run Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/review.md
+          output-file: codex-output.md
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+
+      - name: Sync PR review into description and comment
+        if: steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const review = (process.env.CODEX_FINAL_MESSAGE ?? "").trim();
+            if (!review) {
+              core.setFailed("Missing Codex final message");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+
+            const startMarker = "<!-- codex-review:start -->";
+            const endMarker = "<!-- codex-review:end -->";
+            const commentMarker = "<!-- codex-review-comment -->";
+
+            const escapeRegExp = (value) =>
+              value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+            const upsertManagedBlock = (body, blockStart, blockEnd, content) => {
+              const trimmedBody = (body ?? "").trim();
+              const block = `${blockStart}\n${content}\n${blockEnd}`;
+              const pattern = new RegExp(
+                `${escapeRegExp(blockStart)}[\\s\\S]*?${escapeRegExp(blockEnd)}`,
+                "m",
+              );
+
+              if (!trimmedBody) return block;
+              if (pattern.test(trimmedBody)) {
+                return trimmedBody.replace(pattern, block).trim();
+              }
+              return `${trimmedBody}\n\n${block}`;
+            };
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number,
+            });
+
+            const updatedBody = upsertManagedBlock(
+              pull.body,
+              startMarker,
+              endMarker,
+              review,
+            );
+
+            await github.rest.pulls.update({
+              owner,
+              repo,
+              pull_number,
+              body: updatedBody,
+            });
+
+            const commentBody = `${commentMarker}\n${review}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: pull_number,
+              per_page: 100,
+            });
+
+            const existingComment = comments.find(
+              (comment) =>
+                typeof comment.body === "string" &&
+                comment.body.includes(commentMarker),
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pull_number,
+                body: commentBody,
+              });
+            }

@@ -1,0 +1,67 @@
+name: PR Preview Package
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  preview:
+    name: Build Preview Tarball
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Compute preview version
+        id: preview
+        run: |
+          BASE_VERSION="$(node -p "require('./package.json').version")"
+          PREVIEW_VERSION="${BASE_VERSION}-pr.${{ github.event.pull_request.number }}.${GITHUB_SHA::7}"
+          echo "version=$PREVIEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Apply preview version
+        run: npm version "${{ steps.preview.outputs.version }}" --no-git-tag-version
+
+      - name: Build preview tarball
+        run: pnpm pack:github
+
+      - name: Capture tarball path
+        id: tarball
+        run: |
+          TAR_PATH="$(find .artifacts -maxdepth 1 -name '*.tgz' | head -n 1)"
+          if [ -z "$TAR_PATH" ]; then
+            echo "No tarball found in .artifacts" >&2
+            exit 1
+          fi
+          echo "path=$TAR_PATH" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$TAR_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.tarball.outputs.name }}
+          path: ${{ steps.tarball.outputs.path }}
+
+      - name: Add workflow summary
+        run: |
+          echo "## Preview package" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${{ steps.preview.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: \`${{ steps.tarball.outputs.name }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Download it from this workflow run, then install with \`npm install -g ./<artifact>.tgz\`" >> "$GITHUB_STEP_SUMMARY"

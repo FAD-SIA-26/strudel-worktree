@@ -154,7 +154,6 @@ export class LeadStateMachine {
     this.emit('LeadPlanReady', { workerPrompts })
     this.state = 'running'
 
-    // Namespace worker ids and branches by runId to prevent collisions across runs
     const workers = workerPrompts.map((prompt, i) => new WorkerStateMachine({
       id:           `${this.cfg.runId}-${this.cfg.sectionId}-v${i + 1}`,
       leadId:       this.cfg.id,

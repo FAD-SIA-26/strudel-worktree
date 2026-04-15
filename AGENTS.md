@@ -12,6 +12,10 @@ This repository is a `pnpm` workspace managed by Turbo. Primary code lives in `a
 
 Generated runtime state like `.orc/`, `.worktrees/`, `apps/api/.orc/`, `apps/api/.worktrees/`, `.next/`, `dist/`, and local database files should not be treated as source.
 
+## Current Feature Notes
+- The current user-gated lane review and preview-ready behavior is documented in `docs/superpowers/guides/2026-04-15-user-gated-lane-review-implemented.md`.
+- Read that note before changing lead winner selection, lane/run merge flow, dashboard review state, or preview-launch behavior.
+
 ## Build, Test, and Development Commands
 - `pnpm install`: install workspace dependencies.
 - `pnpm dev`: run all app dev processes through Turbo.

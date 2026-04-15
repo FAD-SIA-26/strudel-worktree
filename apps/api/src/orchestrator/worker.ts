@@ -41,11 +41,15 @@ export class WorkerStateMachine {
     this.branch = cfg.branch
   }
 
-  private emit(eventType: string, payload: Record<string, unknown>): void {
+  private emit(eventType: OrcEvent['eventType'], payload: Record<string, unknown>): void {
     const event: OrcEvent = {
-      entityId: this.cfg.id, entityType: 'worker',
-      eventType: eventType as any, sequence: nextSeq(this.cfg.id), ts: Date.now(), payload,
-    }
+      entityId: this.cfg.id,
+      entityType: 'worker',
+      eventType,
+      sequence: nextSeq(this.cfg.id),
+      ts: Date.now(),
+      payload,
+    } as OrcEvent
     writeEvent(this.cfg.db, event, () => {
       upsertTask(this.cfg.db, this.cfg.id, 'worker', this.cfg.leadId, this.state)
     })
@@ -83,8 +87,10 @@ export class WorkerStateMachine {
     const wtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, this.cfg.id)
     try {
       await createWorktree(this.cfg.repoRoot, wtPath, this.cfg.branch)
-    } catch (err: any) {
-      if (!err.message?.includes('already exists')) throw err
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes('already exists')) {
+        throw error
+      }
     }
 
     upsertWorktree(this.cfg.db, this.cfg.id, this.cfg.id, wtPath, this.cfg.branch, this.cfg.baseBranch)
@@ -123,10 +129,11 @@ export class WorkerStateMachine {
           wtPath,
           `orc: complete ${this.cfg.id}`,
         )
-      } catch (err: any) {
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'failed to commit worker changes'
         this.state = 'failed'
-        this.emit('WorkerFailed', { error: err.message ?? 'failed to commit worker changes', retryable: true })
-        return { status: 'failed', branch: result.branch, error: err.message ?? 'failed to commit worker changes' }
+        this.emit('WorkerFailed', { error: message, retryable: true })
+        return { status: 'failed', branch: result.branch, error: message }
       }
       this.state = 'done'
       this.emit('WorkerDone', { branch: result.branch, diff: result.diff ?? '' })
