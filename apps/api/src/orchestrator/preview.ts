@@ -54,6 +54,17 @@ function encodePreviewUrl(generatedCode: string): string {
   return `https://strudel.cc/#${Buffer.from(generatedCode).toString('base64')}`
 }
 
+export async function generateRunPreviewUrl(worktreePath: string, runBranch: string): Promise<string> {
+  const codePath = path.join(worktreePath, 'src/index.js')
+  let generatedCode = ''
+  try {
+    generatedCode = await fs.readFile(codePath, 'utf8')
+  } catch {
+    generatedCode = `// src/index.js not yet written for ${runBranch}`
+  }
+  return encodePreviewUrl(generatedCode)
+}
+
 function persistPreviewArtifact(
   db: Db,
   workerId: string,
@@ -112,7 +123,7 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
 
   const mergeCandidates = getMergeCandidates(db)
   const winnerIds = upstreamLeadIds.map(depLeadId => {
-    const winner = mergeCandidates.find(c => c.leadId === depLeadId)?.winnerWorkerId
+    const winner = mergeCandidates.find(c => c.leadId === depLeadId)?.selectedWinnerWorkerId
     if (!winner) {
       throw new Error(`context unavailable for ${workerId}: missing winner for ${depLeadId}`)
     }
@@ -147,6 +158,24 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
   const generatedAt = Date.now()
   persistPreviewArtifact(db, workerId, mode, previewUrl, draft.generatedCode, draft.sourceFiles, draft.contextWinnerIds, generatedAt)
   return { workerId, mode, previewUrl, ...draft, generatedAt }
+}
+
+export async function launchRunPreview(db: Db, runId: string, worktreePath: string) {
+  const sourcePath = path.join(worktreePath, 'src/index.js')
+  const generatedCode = await fs.readFile(sourcePath, 'utf8')
+  const previewUrl = await generateRunPreviewUrl(worktreePath, `run/${runId}`)
+  const generatedAt = Date.now()
+  persistPreviewArtifact(
+    db,
+    `run:${runId}:final`,
+    'solo',
+    previewUrl,
+    generatedCode,
+    ['src/index.js'],
+    [],
+    generatedAt,
+  )
+  return { workerId: `run:${runId}:final`, mode: 'solo' as const, previewUrl, generatedAt }
 }
 
 export function stopPreview(db: Db, workerId: string): void {

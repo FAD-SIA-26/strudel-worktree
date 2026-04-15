@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { generateStrudelPreviewUrl } from './preview'
+import { generateRunPreviewUrl, generateStrudelPreviewUrl } from './preview'
 
 describe('generateStrudelPreviewUrl', () => {
   it('uses the section id from namespaced worker ids', async () => {
@@ -28,5 +28,16 @@ describe('generateStrudelPreviewUrl', () => {
     const previewUrl = await generateStrudelPreviewUrl(worktreePath, 'run-123-arrangement-v1')
 
     expect(Buffer.from(previewUrl.split('#')[1] ?? '', 'base64').toString('utf8')).toContain('stack(sound("bd"))')
+  })
+
+  it('builds a final-song preview from the run worktree', async () => {
+    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-preview-'))
+    await fs.mkdir(path.join(worktreePath, 'src'), { recursive: true })
+    await fs.writeFile(path.join(worktreePath, 'src/index.js'), 'stack(sound("bd"), sound("hh"))')
+
+    const previewUrl = await generateRunPreviewUrl(worktreePath, 'run/r1')
+
+    expect(previewUrl).toContain('https://strudel.cc/#')
+    expect(Buffer.from(previewUrl.split('#')[1] ?? '', 'base64').toString('utf8')).toContain('stack(sound("bd"), sound("hh"))')
   })
 })
