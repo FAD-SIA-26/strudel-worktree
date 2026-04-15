@@ -5,7 +5,11 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 type PreviewArtifact = { previewUrl: string }
 
 function openPreviewTab() {
-  return window.open('about:blank', '_blank', 'noopener,noreferrer')
+  const previewTab = window.open('about:blank', '_blank')
+  try {
+    if (previewTab) previewTab.opener = null
+  } catch {}
+  return previewTab
 }
 
 async function parseArtifact(res: Response): Promise<PreviewArtifact | null> {
@@ -17,17 +21,17 @@ async function parseArtifact(res: Response): Promise<PreviewArtifact | null> {
   }
 }
 
-export async function launchWorkerPreview(
+async function launchPreview(
   queryClient: QueryClient,
-  workerId: string,
-  mode: 'solo' | 'contextual',
+  endpoint: string,
+  body?: Record<string, unknown>,
 ): Promise<PreviewArtifact | null> {
   const previewTab = openPreviewTab()
   try {
-    const res = await fetch(`${API}/api/preview/launch`, {
+    const res = await fetch(`${API}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId, mode }),
+      ...(body ? { body: JSON.stringify(body) } : {}),
     })
     if (!res.ok) {
       previewTab?.close()
@@ -49,29 +53,14 @@ export async function launchWorkerPreview(
   }
 }
 
+export async function launchWorkerPreview(
+  queryClient: QueryClient,
+  workerId: string,
+  mode: 'solo' | 'contextual',
+): Promise<PreviewArtifact | null> {
+  return launchPreview(queryClient, '/api/preview/launch', { workerId, mode })
+}
+
 export async function launchFinalPreview(queryClient: QueryClient): Promise<PreviewArtifact | null> {
-  const previewTab = openPreviewTab()
-  try {
-    const res = await fetch(`${API}/api/preview/final`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    })
-    if (!res.ok) {
-      previewTab?.close()
-      return null
-    }
-
-    const artifact = await parseArtifact(res)
-    if (!artifact) {
-      previewTab?.close()
-      return null
-    }
-
-    previewTab?.location.assign(artifact.previewUrl)
-    await queryClient.invalidateQueries({ queryKey: ['orchestration'] })
-    return artifact
-  } catch {
-    previewTab?.close()
-    return null
-  }
+  return launchPreview(queryClient, '/api/preview/final')
 }
