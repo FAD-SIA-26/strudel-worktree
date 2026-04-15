@@ -49,12 +49,13 @@ export const taskEdges = sqliteTable('task_edges', {
 })
 
 export const mergeCandidates = sqliteTable('merge_candidates', {
-  id:                text('id').primaryKey(),
-  leadId:            text('lead_id').notNull(),
-  winnerWorkerId:    text('winner_worker_id').notNull(),
-  targetBranch:      text('target_branch').notNull(),
-  reviewerReasoning: text('reviewer_reasoning'),
-  selectionSource:   text('selection_source').notNull().default('reviewer'),
+  id:                     text('id').primaryKey(),
+  leadId:                 text('lead_id').notNull(),
+  proposedWinnerWorkerId: text('proposed_winner_worker_id'),
+  selectedWinnerWorkerId: text('selected_winner_worker_id'),
+  targetBranch:           text('target_branch').notNull(),
+  reviewerReasoning:      text('reviewer_reasoning'),
+  selectionSource:        text('selection_source').notNull().default('proposal_accept'),
 })
 
 export const mergeQueue = sqliteTable('merge_queue', {

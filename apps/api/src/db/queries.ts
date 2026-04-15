@@ -48,13 +48,15 @@ export function getMergeCandidates(db: Db) {
   return getSQLite(db).prepare(`
     SELECT
       lead_id AS leadId,
-      winner_worker_id AS winnerWorkerId,
+      proposed_winner_worker_id AS proposedWinnerWorkerId,
+      selected_winner_worker_id AS selectedWinnerWorkerId,
       selection_source AS selectionSource
     FROM merge_candidates
   `).all() as Array<{
     leadId: string
-    winnerWorkerId: string
-    selectionSource: 'reviewer' | 'user'
+    proposedWinnerWorkerId: string | null
+    selectedWinnerWorkerId: string | null
+    selectionSource: 'proposal_accept' | 'user_override'
   }>
 }
 
