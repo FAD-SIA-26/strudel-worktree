@@ -599,4 +599,34 @@ describe('routes', () => {
     })
     expect(String(res.body.diff.content)).toContain('diff --git')
   })
+
+  it('GET /api/entities/:entityId/logs returns the latest worker log window oldest-first', async () => {
+    repoDir = initTestRepo('worker-logs-route')
+    const db = createTestDb()
+    const wtPath = path.join(repoDir, '.orc', 'worktrees', 'main-v1')
+
+    await createWorktree(repoDir, wtPath, 'feat/main-v1')
+    await fs.writeFile(path.join(wtPath, '.orc', '.orc-session.jsonl'), [
+      JSON.stringify({ ts: 1, output: 'first\n' }),
+      JSON.stringify({ ts: 2, output: 'second\n' }),
+      JSON.stringify({ ts: 3, output: 'third\n' }),
+    ].join('\n') + '\n')
+
+    upsertTask(db, 'main-lead', 'lead', 'mastermind', 'running')
+    upsertTask(db, 'main-v1', 'worker', 'main-lead', 'running')
+    upsertWorktree(db, 'main-v1', 'main-v1', wtPath, 'feat/main-v1', 'main')
+    upsertArtifact(db, 'main-v1', 'session_log', path.join(wtPath, '.orc', '.orc-session.jsonl'))
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/entities/main-v1/logs?limit=2')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({
+      entries: [
+        expect.objectContaining({ id: 'main-v1:line:2', body: 'second', kind: 'stdout' }),
+        expect.objectContaining({ id: 'main-v1:line:3', body: 'third', kind: 'stdout' }),
+      ],
+      tailCursor: 'line:3',
+    })
+  })
 })

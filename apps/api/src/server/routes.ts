@@ -2,9 +2,16 @@ import { existsSync } from 'node:fs'
 import * as path from 'node:path'
 import { Router } from 'express'
 import type { AppDeps } from './app'
-import { getAllTasks, getWorktrees, getPreviews, getMergeCandidates, getTaskEdges } from '../db/queries'
+import { getAllTasks, getWorktrees, getPreviews, getMergeCandidates, getTaskEdges, getArtifactPath } from '../db/queries'
 import { launchPreview, launchRunPreview, stopPreview } from '../orchestrator/preview'
 import { getEntityDetail } from './entityDetails'
+import { readLeadLogWindow, readWorkerLogWindow, streamLeadLogs, streamWorkerLogs } from './entityLogs'
+
+function parseLimit(value: unknown): number {
+  const numeric = Number(value ?? 500)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 500
+  return Math.min(1000, Math.floor(numeric))
+}
 
 export function createRoutes({ db, leadQueues }: AppDeps): Router {
   const r = Router()
@@ -95,6 +102,71 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
       return
     }
     res.json(detail)
+  })
+
+  r.get('/entities/:entityId/logs', async (req, res) => {
+    const entityId = req.params.entityId
+    const task = getAllTasks(db).find(candidate => candidate.id === entityId)
+    if (!task) {
+      res.status(404).json({ error: `entity not found: ${entityId}` })
+      return
+    }
+
+    const limit = parseLimit(req.query.limit)
+
+    if (task.type === 'lead') {
+      res.json(readLeadLogWindow(db, entityId, limit))
+      return
+    }
+
+    if (task.type === 'worker') {
+      const worktree = getWorktrees(db).find(candidate => candidate.workerId === entityId)
+      if (!worktree) {
+        res.status(404).json({ error: `worktree not found for ${entityId}` })
+        return
+      }
+      const logPath = getArtifactPath(db, entityId, 'session_log') ?? `${worktree.path}/.orc/.orc-session.jsonl`
+      res.json(await readWorkerLogWindow(entityId, logPath, limit))
+      return
+    }
+
+    res.status(400).json({ error: `unsupported entity type for logs: ${task.type}` })
+  })
+
+  r.get('/entities/:entityId/logs/stream', (req, res) => {
+    const entityId = req.params.entityId
+    const task = getAllTasks(db).find(candidate => candidate.id === entityId)
+    if (!task) {
+      res.status(404).end()
+      return
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders?.()
+
+    const afterValue = String(req.query.after ?? '')
+    let cleanup = () => {}
+
+    if (task.type === 'lead') {
+      const afterEventId = afterValue.startsWith('event:') ? Number(afterValue.slice(6)) : 0
+      cleanup = streamLeadLogs(db, res, entityId, Number.isFinite(afterEventId) ? afterEventId : 0)
+    } else if (task.type === 'worker') {
+      const worktree = getWorktrees(db).find(candidate => candidate.workerId === entityId)
+      if (!worktree) {
+        res.end()
+        return
+      }
+      const logPath = getArtifactPath(db, entityId, 'session_log') ?? `${worktree.path}/.orc/.orc-session.jsonl`
+      const afterLine = afterValue.startsWith('line:') ? Number(afterValue.slice(5)) : 0
+      cleanup = streamWorkerLogs(res, entityId, logPath, Number.isFinite(afterLine) ? afterLine : 0)
+    }
+
+    req.on('close', () => {
+      cleanup()
+      res.end()
+    })
   })
 
   r.post('/approve', (req, res) => {
