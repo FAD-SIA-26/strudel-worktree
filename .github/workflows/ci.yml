@@ -76,3 +76,60 @@ jobs:
 
       - name: Run build
         run: pnpm build
+
+  codex-review:
+    name: Codex Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Codex CLI
+        run: npm install --global @openai/codex@0.120.0
+
+      - name: Login to Codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
+
+      - name: Configure GitHub MCP
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: codex mcp add github --url https://api.githubcopilot.com/mcp/ --bearer-token-env-var GITHUB_TOKEN
+
+      - name: Fetch pull request base
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Run Codex review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cat <<EOF > /tmp/codex-pr-review.md
+          $(cat agents/reviewer.md)
+
+          Pull request context:
+          - Repository: ${{ github.repository }}
+          - Pull request number: ${{ github.event.pull_request.number }}
+          - Base branch: origin/${{ github.base_ref }}
+          - Head branch: ${{ github.head_ref }}
+
+          Use GitHub MCP to:
+          1. Read the current pull request title and description.
+          2. Review the checked out branch against origin/${{ github.base_ref }}.
+          3. Post exactly one review comment on pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+          EOF
+
+          codex -a never -s workspace-write review --base origin/${{ github.base_ref }} - < /tmp/codex-pr-review.md
