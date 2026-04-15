@@ -1,11 +1,16 @@
 {
   "name": "worktree-orchestrator",
   "packageManager": "pnpm@10.32.0",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "bin": {
     "orc": "./dist/cli.mjs"
   },
-  "files": ["dist", "templates", "skills", "README.md"],
+  "files": [
+    "dist",
+    "templates",
+    "skills",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },
