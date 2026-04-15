@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getSQLite, type Db } from '../db/client'
-import { getAllTasks, getMergeCandidates, getTaskEdges, getWorktrees } from '../db/queries'
+import { getAllTasks, getMergeCandidates, getWorktrees } from '../db/queries'
 import { composeContextualPreview, composeLanePreview } from './previewComposer'
 
 export type PreviewMode = 'solo' | 'contextual'
@@ -116,19 +116,14 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
     throw new Error(`lead not found for worker ${workerId}`)
   }
 
-  const taskEdges = getTaskEdges(db)
-  const upstreamLeadIds = taskEdges
-    .filter(edge => edge.edgeType === 'depends_on' && edge.childId === leadId)
-    .map(edge => edge.parentId)
-
   const mergeCandidates = getMergeCandidates(db)
-  const winnerIds = upstreamLeadIds.map(depLeadId => {
-    const winner = mergeCandidates.find(c => c.leadId === depLeadId)?.selectedWinnerWorkerId
-    if (!winner) {
-      throw new Error(`context unavailable for ${workerId}: missing winner for ${depLeadId}`)
-    }
-    return winner
-  })
+  const winnerIds = mergeCandidates
+    .filter(c => c.leadId !== leadId && c.selectedWinnerWorkerId != null)
+    .map(c => c.selectedWinnerWorkerId as string)
+
+  if (winnerIds.length === 0) {
+    throw new Error(`context unavailable for ${workerId}: no approved winners from other sections`)
+  }
 
   const worktrees = getWorktrees(db)
   const upstreamEntries = await Promise.all(winnerIds.map(async winnerWorkerId => {
