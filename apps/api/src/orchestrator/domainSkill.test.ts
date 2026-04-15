@@ -31,7 +31,18 @@ describe('domain skill resolution', () => {
     expect(skill?.content).toContain('stay in lane')
   })
 
-  it('selects the explicit template even when the skill name is invalid', async () => {
+  it('selects the explicit template even when a valid skill default and a non-music goal are provided', async () => {
+    const repoRoot = await makeRepo()
+    const selection = await resolveTemplateSelection({
+      repoRoot,
+      userGoal: 'build admin dashboard',
+      explicitTemplateName: 'explicit',
+      skillName: 'strudel',
+    })
+    expect(selection).toBe(path.join(repoRoot, 'templates', 'explicit.toml'))
+  })
+
+  it('still uses the explicit template even when the skill is invalid', async () => {
     const repoRoot = await makeRepo()
     const selection = await resolveTemplateSelection({
       repoRoot,
@@ -46,7 +57,7 @@ describe('domain skill resolution', () => {
     const repoRoot = await makeRepo()
     const selection = await resolveTemplateSelection({
       repoRoot,
-      userGoal: 'write a track',
+      userGoal: 'build admin dashboard',
       skillName: 'strudel',
     })
     expect(selection).toBe(path.join(repoRoot, 'templates', 'strudel-track.toml'))
