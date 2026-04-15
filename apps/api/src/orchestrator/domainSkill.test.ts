@@ -31,13 +31,13 @@ describe('domain skill resolution', () => {
     expect(skill?.content).toContain('stay in lane')
   })
 
-  it('selects the explicit template when provided', async () => {
+  it('selects the explicit template even when the skill name is invalid', async () => {
     const repoRoot = await makeRepo()
     const selection = await resolveTemplateSelection({
       repoRoot,
       userGoal: 'write a track',
       explicitTemplateName: 'explicit',
-      skillName: 'strudel',
+      skillName: 'invalid-skill',
     })
     expect(selection).toBe(path.join(repoRoot, 'templates', 'explicit.toml'))
   })

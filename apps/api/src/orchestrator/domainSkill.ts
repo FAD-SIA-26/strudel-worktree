@@ -50,10 +50,12 @@ export async function resolveTemplateSelection(opts: {
   explicitTemplateName?: string
   skillName?: string
 }): Promise<string | undefined> {
+  if (opts.explicitTemplateName) {
+    return path.join(opts.repoRoot, 'templates', `${opts.explicitTemplateName}.toml`)
+  }
+
   const skill = await resolveDomainSkill(opts.repoRoot, opts.skillName)
-  const templateName = opts.explicitTemplateName
-    ?? skill?.defaultTemplateName
-    ?? autoDetectTemplateName(opts.userGoal)
+  const templateName = skill?.defaultTemplateName ?? autoDetectTemplateName(opts.userGoal)
 
   if (!templateName) return undefined
   return path.join(opts.repoRoot, 'templates', `${templateName}.toml`)
