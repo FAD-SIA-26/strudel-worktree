@@ -2,17 +2,21 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { SectionInfo, WorkerInfo } from '@orc/types'
+import { launchWorkerPreview } from '../lib/previewActions'
+import { getProposedWorker, getSelectedWorker } from '../lib/reviewState'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
 const WORKER_STATE_CFG: Record<string, { dot: string; text: string }> = {
-  queued:   { dot: 'bg-gray-500',                text: 'text-gray-500' },
-  spawning: { dot: 'bg-blue-400 animate-pulse',  text: 'text-blue-400' },
-  running:  { dot: 'bg-blue-400 animate-pulse',  text: 'text-blue-400' },
-  stalled:  { dot: 'bg-amber-400',               text: 'text-amber-400' },
-  zombie:   { dot: 'bg-red-500',                 text: 'text-red-400' },
-  done:     { dot: 'bg-emerald-400',             text: 'text-emerald-400' },
-  failed:   { dot: 'bg-red-500',                 text: 'text-red-400' },
+  queued: { dot: 'bg-gray-500', text: 'text-gray-500' },
+  spawning: { dot: 'bg-blue-400 animate-pulse', text: 'text-blue-400' },
+  running: { dot: 'bg-blue-400 animate-pulse', text: 'text-blue-400' },
+  stalled: { dot: 'bg-amber-400', text: 'text-amber-400' },
+  zombie: { dot: 'bg-red-500', text: 'text-red-400' },
+  stopping: { dot: 'bg-amber-400 animate-pulse', text: 'text-amber-300' },
+  stop_failed: { dot: 'bg-red-500', text: 'text-red-400' },
+  done: { dot: 'bg-emerald-400', text: 'text-emerald-400' },
+  failed: { dot: 'bg-red-500', text: 'text-red-400' },
 }
 
 function CodeBlock({ children, color = 'blue' }: { children: string; color?: 'blue' | 'amber' }) {
@@ -40,6 +44,7 @@ export function DetailPanel({ selectedId, sections }: {
   const [tab, setTab] = useState<'compare' | 'plan' | 'logs' | 'preview'>(
     isLead ? 'compare' : 'plan'
   )
+  const [pendingWinnerId, setPendingWinnerId] = useState<string | null>(null)
 
   useEffect(() => {
     setTab(isLead ? 'compare' : 'plan')
@@ -61,51 +66,60 @@ export function DetailPanel({ selectedId, sections }: {
     )
   }
 
-  const sectionId = selectedId.replace('-lead', '')
-  const section = sections.find(s => s.id === sectionId)
-  const worker = sections.flatMap(s => s.workers).find(w => w.id === selectedId)
+  const leadSection = isLead
+    ? sections.find(s => `${s.id}-lead` === selectedId)
+    : sections.find(s => s.workers.some(w => w.id === selectedId))
+  const leadId = leadSection ? `${leadSection.id}-lead` : null
+  const sectionId = leadSection?.id ?? selectedId.replace('-lead', '')
+  const section = isLead ? leadSection : undefined
+  const worker = isLead ? undefined : leadSection?.workers.find(w => w.id === selectedId)
   const workerCfg = worker ? (WORKER_STATE_CFG[worker.state] ?? WORKER_STATE_CFG.queued) : null
   const headerSoloPreview = worker ? previewFor(worker, 'solo') : null
+  const proposedWorker = getProposedWorker(section)
+  const selectedWorker = getSelectedWorker(section)
 
-  async function approveWorker(workerId: string, leadId: string) {
-    const res = await fetch(`${API}/api/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId, leadId }),
-    })
-    if (res.ok) {
-      await qc.invalidateQueries({ queryKey: ['orchestration'] })
+  async function approveProposal(targetLeadId: string) {
+    setPendingWinnerId(proposedWorker?.id ?? null)
+    try {
+      const res = await fetch(`${API}/api/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leadId: targetLeadId }),
+      })
+      if (res.ok) {
+        await qc.invalidateQueries({ queryKey: ['orchestration'] })
+      }
+    } finally {
+      setPendingWinnerId(null)
+    }
+  }
+
+  async function pickWinner(workerId: string, targetLeadId: string) {
+    setPendingWinnerId(workerId)
+    try {
+      const res = await fetch(`${API}/api/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workerId, leadId: targetLeadId }),
+      })
+      if (res.ok) {
+        await qc.invalidateQueries({ queryKey: ['orchestration'] })
+      }
+    } finally {
+      setPendingWinnerId(null)
     }
   }
 
   async function drop() {
-    const leadId = isLead
-      ? selectedId
-      : `${sections.find(s => s.workers.some(w => w.id === selectedId))?.id}-lead`
+    const targetLeadId = isLead ? selectedId : leadId
+    if (!targetLeadId) return
+
     await fetch(`${API}/api/drop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: selectedId, leadId }),
+      body: JSON.stringify({ workerId: selectedId, leadId: targetLeadId }),
     })
     await qc.invalidateQueries({ queryKey: ['orchestration'] })
-  }
-
-  async function launchPreview(workerId: string, mode: 'solo' | 'contextual') {
-    const previewTab = window.open('about:blank', '_blank', 'noopener,noreferrer')
-    const res = await fetch(`${API}/api/preview/launch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId, mode }),
-    })
-    if (!res.ok) {
-      previewTab?.close()
-      return null
-    }
-
-    const artifact = await res.json() as { previewUrl: string }
-    previewTab?.location.assign(artifact.previewUrl)
-    await qc.invalidateQueries({ queryKey: ['orchestration'] })
-    return artifact
   }
 
   const tabs = isLead
@@ -140,12 +154,12 @@ export function DetailPanel({ selectedId, sections }: {
         </div>
 
         <div className="flex gap-1.5 flex-shrink-0">
-          {worker?.state === 'done' && (
+          {worker?.canBeSelected && leadId && (
             <button
-              onClick={() => approveWorker(worker.id, `${sectionId}-lead`)}
+              onClick={() => pickWinner(worker.id, leadId)}
               className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
             >
-              ✓ Approve
+              ✓ Choose this winner
             </button>
           )}
           <button
@@ -165,7 +179,7 @@ export function DetailPanel({ selectedId, sections }: {
             </a>
           ) : worker ? (
             <button
-              onClick={() => launchPreview(worker.id, 'solo')}
+              onClick={() => launchWorkerPreview(qc, worker.id, 'solo')}
               className="text-[11px] bg-[#111825] hover:bg-[#192030] text-blue-400 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
             >
               ▶ Launch
@@ -195,8 +209,38 @@ export function DetailPanel({ selectedId, sections }: {
         {tab === 'compare' && isLead && section && (
           <div className="max-w-2xl space-y-2">
             <p className="text-[11px] text-gray-600 mb-4">
-              Review each worker&apos;s output. Launch a preview to compare, then pick the winner.
+              Review each worker&apos;s output. Launch previews, then explicitly pick the lane winner.
             </p>
+
+            {section.awaitingUserApproval && proposedWorker && leadId && (
+              <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 p-4 mb-4">
+                <div className="text-[11px] text-amber-200">
+                  Mastermind suggests <span className="font-mono">{proposedWorker.id}</span> for this lane. You can
+                  accept it or choose another completed worker.
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => approveProposal(leadId)}
+                    className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25"
+                  >
+                    Accept suggestion
+                  </button>
+                  <button
+                    onClick={() => launchWorkerPreview(qc, proposedWorker.id, 'solo')}
+                    className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25"
+                  >
+                    Open preview
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {selectedWorker && !section.awaitingUserApproval && (
+              <div className="text-[10px] text-emerald-200/85 mb-3">
+                Current selected winner: <span className="font-mono">{selectedWorker.id}</span>
+              </div>
+            )}
+
             {section.workers.map(w => {
               const cfg = WORKER_STATE_CFG[w.state] ?? WORKER_STATE_CFG.queued
               const isDone = w.state === 'done'
@@ -207,7 +251,7 @@ export function DetailPanel({ selectedId, sections }: {
                 <div
                   key={w.id}
                   className={`flex items-center gap-3 p-3.5 rounded-lg border transition-colors ${
-                    w.selected
+                    w.isSelected
                       ? 'border-emerald-400 bg-emerald-500/10 ring-1 ring-emerald-400/30'
                       : isDone
                         ? 'border-emerald-500/25 bg-emerald-500/5'
@@ -216,11 +260,36 @@ export function DetailPanel({ selectedId, sections }: {
                 >
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono text-[11px] text-gray-200 truncate flex items-center gap-2">
+                    <div className="font-mono text-[11px] text-gray-200 truncate flex items-center gap-2 flex-wrap">
                       <span className="truncate">{w.id}</span>
-                      {w.selected && (
+                      {w.isProposed && (
+                        <span className="text-[10px] text-amber-300 border border-amber-400/30 rounded px-2 py-0.5">
+                          SUGGESTED BY REVIEWER
+                        </span>
+                      )}
+                      {w.isSelected && (
                         <span className="text-[10px] text-emerald-300 border border-emerald-400/30 rounded px-2 py-0.5">
-                          WINNER
+                          SELECTED WINNER
+                        </span>
+                      )}
+                      {pendingWinnerId === w.id && (
+                        <span className="text-[10px] text-blue-300 border border-blue-400/30 rounded px-2 py-0.5">
+                          SELECTING...
+                        </span>
+                      )}
+                      {w.isStopping && (
+                        <span className="text-[10px] text-amber-300 border border-amber-400/30 rounded px-2 py-0.5">
+                          STOPPING SIBLINGS...
+                        </span>
+                      )}
+                      {w.state === 'stop_failed' && (
+                        <span className="text-[10px] text-red-300 border border-red-400/30 rounded px-2 py-0.5">
+                          STOPPING FAILED
+                        </span>
+                      )}
+                      {section.selectionStatus === 'lane_merged' && w.isSelected && (
+                        <span className="text-[10px] text-emerald-200 border border-emerald-400/30 rounded px-2 py-0.5">
+                          MERGED INTO LANE
                         </span>
                       )}
                     </div>
@@ -239,7 +308,7 @@ export function DetailPanel({ selectedId, sections }: {
                         </a>
                       ) : (
                         <button
-                          onClick={() => launchPreview(w.id, 'solo')}
+                          onClick={() => launchWorkerPreview(qc, w.id, 'solo')}
                           className="text-[11px] bg-violet-500/8 hover:bg-violet-500/18 text-violet-400 px-2.5 py-1 rounded border border-violet-500/20 transition-colors"
                         >
                           ▶ Launch solo
@@ -256,7 +325,7 @@ export function DetailPanel({ selectedId, sections }: {
                         </a>
                       ) : (
                         <button
-                          onClick={() => launchPreview(w.id, 'contextual')}
+                          onClick={() => launchWorkerPreview(qc, w.id, 'contextual')}
                           className="text-[11px] bg-blue-500/8 hover:bg-blue-500/18 text-blue-400 px-2.5 py-1 rounded border border-blue-500/20 transition-colors disabled:opacity-40"
                           disabled={!w.contextAvailable}
                         >
@@ -264,25 +333,27 @@ export function DetailPanel({ selectedId, sections }: {
                         </button>
                       )}
                       <button
-                        onClick={() => launchPreview(w.id, 'solo')}
+                        onClick={() => launchWorkerPreview(qc, w.id, 'solo')}
                         className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
                       >
                         ↻ Refresh solo
                       </button>
                       {contextualPreview && (
                         <button
-                          onClick={() => launchPreview(w.id, 'contextual')}
+                          onClick={() => launchWorkerPreview(qc, w.id, 'contextual')}
                           className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
                         >
                           ↻ Refresh context
                         </button>
                       )}
-                      <button
-                        onClick={() => approveWorker(w.id, `${sectionId}-lead`)}
-                        className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
-                      >
-                        ✓ Pick winner
-                      </button>
+                      {w.canBeSelected && leadId && (
+                        <button
+                          onClick={() => pickWinner(w.id, leadId)}
+                          className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
+                        >
+                          ✓ Choose this winner
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -367,7 +438,7 @@ export function DetailPanel({ selectedId, sections }: {
                   No preview available yet. <span className="text-blue-400">▶ Launch</span> to start one.
                 </p>
                 <button
-                  onClick={() => launchPreview(worker.id, 'solo')}
+                  onClick={() => launchWorkerPreview(qc, worker.id, 'solo')}
                   className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-3 py-2 rounded border border-blue-500/25 transition-colors"
                 >
                   ▶ Launch Solo Preview

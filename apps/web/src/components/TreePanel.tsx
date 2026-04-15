@@ -8,8 +8,11 @@ const LEAD_BADGE: Record<string, string> = {
   planning:  'text-violet-400 bg-violet-500/10 border-violet-500/20',
   running:   'text-blue-400   bg-blue-500/10   border-blue-500/20',
   reviewing: 'text-amber-400  bg-amber-500/10  border-amber-500/20',
+  awaiting_user_approval: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
   merging:   'text-orange-400 bg-orange-500/10 border-orange-500/20',
+  merging_lane: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
   done:      'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+  review_ready: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
   failed:    'text-red-400    bg-red-500/10    border-red-500/20',
 }
 
