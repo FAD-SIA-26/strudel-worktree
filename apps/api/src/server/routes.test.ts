@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { afterAll, describe, it, expect } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -6,7 +6,13 @@ import request from 'supertest'
 import { createTestDb, getSQLite } from '../db/client'
 import { createApp } from './app'
 import { CommandQueue } from '../events/commandQueues'
-import { upsertTask, upsertWorktree } from '../db/queries'
+import { upsertArtifact, upsertTask, upsertWorktree } from '../db/queries'
+import { createWorktree } from '../git/worktree'
+import { cleanupTestRepo, initTestRepo } from '../test-helpers/initTestRepo'
+
+let repoDir: string
+
+afterAll(() => cleanupTestRepo(repoDir))
 
 describe('routes', () => {
   it('GET /api/orchestration returns sections array', async () => {
@@ -498,5 +504,99 @@ describe('routes', () => {
     expect(res.status).toBe(200)
     expect(res.body.runId).toBe('r2')
     expect(res.body.fullSongPreviewUrl).toBe('https://strudel.cc/#r2')
+  })
+
+  it('GET /api/entities/:entityId/detail returns worker plan, diff, and resolved paths', async () => {
+    repoDir = initTestRepo('worker-detail-route')
+    const db = createTestDb()
+    const wtPath = path.join(repoDir, '.orc', 'worktrees', 'main-v1')
+
+    await createWorktree(repoDir, wtPath, 'feat/main-v1')
+    await fs.writeFile(path.join(wtPath, 'README.md'), '# worker branch change\n')
+    await fs.writeFile(path.join(wtPath, '.orc', 'worker-plan.md'), '# Worker Plan\n\n- [ ] inspect\n')
+    await fs.writeFile(path.join(wtPath, '.orc', '.orc-session.jsonl'), '{"ts":1,"output":"hello"}\n')
+
+    upsertTask(db, 'main-lead', 'lead', 'mastermind', 'running')
+    upsertTask(db, 'main-v1', 'worker', 'main-lead', 'running')
+    upsertWorktree(db, 'main-v1', 'main-v1', wtPath, 'feat/main-v1', 'main')
+    upsertArtifact(db, 'main-v1', 'worker_plan', path.join(wtPath, '.orc', 'worker-plan.md'))
+    upsertArtifact(db, 'main-v1', 'session_log', path.join(wtPath, '.orc', '.orc-session.jsonl'))
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/entities/main-v1/detail')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      entityId: 'main-v1',
+      entityType: 'worker',
+      resolvedPaths: {
+        worktreePath: wtPath,
+        planPath: path.join(wtPath, '.orc', 'worker-plan.md'),
+        logPath: path.join(wtPath, '.orc', '.orc-session.jsonl'),
+      },
+      plan: {
+        status: 'ready',
+        content: '# Worker Plan\n\n- [ ] inspect\n',
+      },
+      diff: {
+        status: 'ready',
+        branch: 'feat/main-v1',
+        baseBranch: 'main',
+      },
+    })
+    expect(String(res.body.diff.content)).toContain('diff --git')
+  })
+
+  it('GET /api/entities/:entityId/detail returns the selected winner diff for a lead', async () => {
+    repoDir = initTestRepo('lead-detail-route')
+    const db = createTestDb()
+    const wtPath = path.join(repoDir, '.orc', 'worktrees', 'melody-v2')
+
+    await createWorktree(repoDir, wtPath, 'feat/melody-v2')
+    await fs.writeFile(path.join(wtPath, 'README.md'), '# winner branch change\n')
+    await fs.mkdir(path.join(repoDir, '.orc', 'runs', 'r5', 'leads'), { recursive: true })
+    await fs.writeFile(path.join(repoDir, '.orc', 'runs', 'r5', 'leads', 'melody.md'), '# Lead Plan\n')
+
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'reviewing')
+    upsertTask(db, 'melody-v2', 'worker', 'melody-lead', 'done')
+    upsertWorktree(db, 'melody-v2', 'melody-v2', wtPath, 'feat/melody-v2', 'main')
+    upsertArtifact(db, 'melody-lead', 'lead_plan', path.join(repoDir, '.orc', 'runs', 'r5', 'leads', 'melody.md'))
+
+    const sqlite = getSQLite(db)
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v2', 'melody-v2', 'run/r5', 'winner selected', 'proposal_accept')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/entities/melody-lead/detail')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      entityId: 'melody-lead',
+      entityType: 'lead',
+      resolvedPaths: {
+        planPath: path.join(repoDir, '.orc', 'runs', 'r5', 'leads', 'melody.md'),
+        winnerWorktreePath: wtPath,
+      },
+      plan: {
+        status: 'ready',
+        content: '# Lead Plan\n',
+      },
+      diff: {
+        status: 'ready',
+        winnerWorkerId: 'melody-v2',
+        branch: 'feat/melody-v2',
+        baseBranch: 'main',
+      },
+    })
+    expect(String(res.body.diff.content)).toContain('diff --git')
   })
 })

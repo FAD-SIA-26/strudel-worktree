@@ -4,6 +4,7 @@ import { Router } from 'express'
 import type { AppDeps } from './app'
 import { getAllTasks, getWorktrees, getPreviews, getMergeCandidates, getTaskEdges } from '../db/queries'
 import { launchPreview, launchRunPreview, stopPreview } from '../orchestrator/preview'
+import { getEntityDetail } from './entityDetails'
 
 export function createRoutes({ db, leadQueues }: AppDeps): Router {
   const r = Router()
@@ -85,6 +86,15 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
   r.get('/events', (_req, res) => {
     const sqlite = (db as any).session.client
     res.json({ events: sqlite.prepare('SELECT * FROM event_log ORDER BY id DESC LIMIT 100').all() })
+  })
+
+  r.get('/entities/:entityId/detail', async (req, res) => {
+    const detail = await getEntityDetail(db, req.params.entityId)
+    if (!detail) {
+      res.status(404).json({ error: `entity not found: ${req.params.entityId}` })
+      return
+    }
+    res.json(detail)
   })
 
   r.post('/approve', (req, res) => {
