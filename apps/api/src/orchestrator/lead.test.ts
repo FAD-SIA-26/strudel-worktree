@@ -1,25 +1,31 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import * as fs from 'node:fs/promises'
 import { initTestRepo, cleanupTestRepo } from '../test-helpers/initTestRepo'
-import { createTestDb } from '../db/client'
+import { createTestDb, getSQLite } from '../db/client'
 import { ConcurrencyGovernor } from './concurrency'
 import { MockAgent } from '../agents/mock'
 import { LeadStateMachine } from './lead'
 import { CommandQueue } from '../events/commandQueues'
+import { laneBranchName } from '../git/branchLayout'
 
 let repoDir: string
 afterAll(() => cleanupTestRepo(repoDir))
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
 describe('LeadStateMachine', () => {
-  it('PM → 2 workers → reviewer → LeadDone, creates lead plan', async () => {
+  it('reviewer proposes a winner and lead waits for explicit user approval', async () => {
     repoDir = initTestRepo('lead-test')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(4)
+    const q = new CommandQueue<any>()
     const lead = new LeadStateMachine({
       id: 'rhythm-lead', sectionId: 'rhythm', sectionGoal: 'Write rhythm section',
-      numWorkers: 2, baseBranch: 'main', runBranch: 'run/r1', runId: 'r1',
+      numWorkers: 2, baseBranch: 'main', laneBranch: laneBranchName('r1', 'rhythm'), runId: 'r1',
       repoRoot: repoDir, db, governor: gov,
-      commandQueue: new CommandQueue(),
+      commandQueue: q,
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
@@ -27,25 +33,70 @@ describe('LeadStateMachine', () => {
         return JSON.stringify({ winnerId: 'r1-rhythm-v1', reasoning: 'best diff' })
       },
     })
-    const result = await lead.run()
+
+    const runPromise = lead.run()
+    await sleep(75)
+
+    expect(lead.state).toBe('awaiting_user_approval')
+    const sqlite = getSQLite(db)
+    expect(sqlite.prepare(`
+      SELECT proposed_winner_worker_id AS proposedWinnerWorkerId, selected_winner_worker_id AS selectedWinnerWorkerId
+      FROM merge_candidates
+      WHERE id=?
+    `).get('rhythm-lead')).toEqual({
+      proposedWinnerWorkerId: 'r1-rhythm-v1',
+      selectedWinnerWorkerId: null,
+    })
+
+    let settled = false
+    void runPromise.then(() => { settled = true })
+    await sleep(25)
+    expect(settled).toBe(false)
+
+    q.enqueue({ commandType: 'AcceptProposal' })
+    const result = await runPromise
     expect(result.status).toBe('done')
-    expect(result.winnerBranch).toBe('feat/r1-rhythm-v1')
+    expect(result.laneBranch).toBe('lane/r1/rhythm')
+    expect(sqlite.prepare(`
+      SELECT selected_winner_worker_id AS selectedWinnerWorkerId, selection_source AS selectionSource
+      FROM merge_candidates
+      WHERE id=?
+    `).get('rhythm-lead')).toEqual({
+      selectedWinnerWorkerId: 'r1-rhythm-v1',
+      selectionSource: 'proposal_accept',
+    })
+    expect(sqlite.prepare(`
+      SELECT event_type AS eventType
+      FROM event_log
+      WHERE entity_id=?
+      ORDER BY id ASC
+    `).all('rhythm-lead').map((row: any) => row.eventType)).toEqual(expect.arrayContaining([
+      'WinnerProposed',
+      'WinnerSelected',
+      'LaneMergeStarted',
+      'LaneMergeCompleted',
+      'LeadDone',
+    ]))
   }, 30_000)
 
   it('preserves the exact section goal when PM prompt generation falls back', async () => {
     repoDir = initTestRepo('lead-fallback-test')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(4)
+    const q = new CommandQueue<any>()
     const lead = new LeadStateMachine({
       id: 'main-lead', sectionId: 'main', sectionGoal: 'Create a file with exactly one line: hello',
-      numWorkers: 2, baseBranch: 'main', runBranch: 'run/r2', runId: 'r2',
+      numWorkers: 2, baseBranch: 'main', laneBranch: laneBranchName('r2', 'main'), runId: 'r2',
       repoRoot: repoDir, db, governor: gov,
-      commandQueue: new CommandQueue(),
+      commandQueue: q,
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async () => JSON.stringify({ winnerId: 'r2-main-v1', reasoning: 'fallback shape' }),
     })
 
-    await lead.run()
+    const runPromise = lead.run()
+    await sleep(75)
+    q.enqueue({ commandType: 'AcceptProposal' })
+    await runPromise
 
     const leadPlan = await fs.readFile(`${repoDir}/.orc/runs/r2/leads/main.md`, 'utf8')
     expect(leadPlan).toContain('Create a file with exactly one line: hello')
@@ -53,53 +104,139 @@ describe('LeadStateMachine', () => {
     expect(leadPlan).not.toContain('(variation 2)')
   }, 30_000)
 
-  it('force-approves a done winner and aborts running siblings', async () => {
-    repoDir = initTestRepo('lead-force-approve-test')
+  it('user can override the reviewer proposal', async () => {
+    repoDir = initTestRepo('lead-user-override-test')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(4)
-    const aborted: string[] = []
+    const q = new CommandQueue<any>()
+    const lead = new LeadStateMachine({
+      id: 'bass-lead',
+      sectionId: 'bass',
+      sectionGoal: 'build bass section',
+      numWorkers: 2,
+      baseBranch: 'main',
+      laneBranch: laneBranchName('r2', 'bass'),
+      runId: 'r2',
+      repoRoot: repoDir,
+      db,
+      governor: gov,
+      commandQueue: q,
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
+      llmCall: async p => {
+        if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
+        return JSON.stringify({ winnerId: 'r2-bass-v1', reasoning: 'reviewer preferred v1' })
+      },
+    })
 
-    class RecordingAgent extends MockAgent {
+    const runPromise = lead.run()
+    await sleep(75)
+    q.enqueue({ commandType: 'SelectWinner', workerId: 'r2-bass-v2' })
+    const result = await runPromise
+    expect(result.status).toBe('done')
+    expect(result.laneBranch).toBe('lane/r2/bass')
+    expect(result.reasoning).toBe('user override')
+    expect(getSQLite(db).prepare(`
+      SELECT proposed_winner_worker_id AS proposedWinnerWorkerId,
+             selected_winner_worker_id AS selectedWinnerWorkerId,
+             selection_source AS selectionSource
+      FROM merge_candidates
+      WHERE id=?
+    `).get('bass-lead')).toEqual({
+      proposedWinnerWorkerId: 'r2-bass-v1',
+      selectedWinnerWorkerId: 'r2-bass-v2',
+      selectionSource: 'user_override',
+    })
+  })
+
+  it('fails the lead when reviewer cannot produce a proposal', async () => {
+    repoDir = initTestRepo('lead-reviewer-failure-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const q = new CommandQueue<any>()
+    const lead = new LeadStateMachine({
+      id: 'drums-lead',
+      sectionId: 'drums',
+      sectionGoal: 'build drums section',
+      numWorkers: 1,
+      baseBranch: 'main',
+      laneBranch: laneBranchName('r3', 'drums'),
+      runId: 'r3',
+      repoRoot: repoDir,
+      db,
+      governor: gov,
+      commandQueue: q,
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
+      llmCall: async p => {
+        if (p.includes('Generate')) return JSON.stringify(['variation 1'])
+        throw new Error('reviewer unavailable')
+      },
+    })
+
+    await expect(lead.run()).resolves.toEqual({
+      status: 'failed',
+      laneBranch: '',
+      reasoning: 'reviewer failed',
+    })
+    expect(lead.state).toBe('failed')
+    expect(getSQLite(db).prepare('SELECT COUNT(*) AS n FROM merge_candidates WHERE id=?').get('drums-lead')).toEqual({ n: 0 })
+  })
+
+  it('continues when sibling abort fails and records stop_failed worker state', async () => {
+    repoDir = initTestRepo('lead-stop-failed-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const q = new CommandQueue<any>()
+
+    class StopFailingAgent extends MockAgent {
       constructor(private readonly workerId: string) {
         super({ delayMs: 5, outcome: 'done' })
       }
 
       override async abort(): Promise<void> {
-        aborted.push(this.workerId)
+        if (this.workerId.endsWith('-v2')) throw new Error('abort transport unavailable')
         await super.abort()
       }
     }
 
-    const q = new CommandQueue<any>()
-    q.enqueue({ commandType: 'ForceApprove', winnerId: 'run1-main-v1' })
-
     let nextIndex = 0
     const lead = new LeadStateMachine({
-      id: 'main-lead',
-      sectionId: 'main',
-      sectionGoal: 'build main section',
+      id: 'pad-lead',
+      sectionId: 'pad',
+      sectionGoal: 'build pad section',
       numWorkers: 2,
       baseBranch: 'main',
-      runBranch: 'run/run1',
-      runId: 'run1',
+      laneBranch: laneBranchName('r4', 'pad'),
+      runId: 'r4',
       repoRoot: repoDir,
       db,
       governor: gov,
       commandQueue: q,
       agentFactory: () => {
         nextIndex += 1
-        return new RecordingAgent(`run1-main-v${nextIndex}`)
+        return new StopFailingAgent(`r4-pad-v${nextIndex}`)
       },
       llmCall: async p => {
         if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
-        return JSON.stringify({ winnerId: 'run1-main-v2', reasoning: 'reviewer would have picked v2' })
+        return JSON.stringify({ winnerId: 'r4-pad-v1', reasoning: 'v1 is best' })
       },
     })
 
-    const result = await lead.run()
-    expect(result.status).toBe('done')
-    expect(result.winnerBranch).toBe('feat/run1-main-v1')
-    expect(result.reasoning).toBe('force-approved by user')
-    expect(aborted).toContain('run1-main-v2')
+    const runPromise = lead.run()
+    await sleep(75)
+    q.enqueue({ commandType: 'AcceptProposal' })
+
+    await expect(runPromise).resolves.toMatchObject({
+      status: 'done',
+      laneBranch: 'lane/r4/pad',
+    })
+
+    const sqlite = getSQLite(db)
+    expect(sqlite.prepare('SELECT state FROM tasks WHERE id=?').get('r4-pad-v2')).toEqual({ state: 'stop_failed' })
+    expect(sqlite.prepare(`
+      SELECT event_type AS eventType
+      FROM event_log
+      WHERE entity_id=?
+      ORDER BY id ASC
+    `).all('r4-pad-v2').map((row: any) => row.eventType)).toContain('WorkerStopFailed')
   })
 })
