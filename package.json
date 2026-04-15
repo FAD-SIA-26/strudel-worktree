@@ -1,13 +1,14 @@
 {
   "name": "worktree-orchestrator",
   "private": true,
+  "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "dev":          "turbo run dev --parallel",
-    "build":        "turbo run build",
-    "test":         "turbo run test",
-    "lint":         "biome check .",
-    "db:generate":  "cd apps/api && pnpm drizzle-kit generate",
-    "db:migrate":   "cd apps/api && pnpm drizzle-kit migrate"
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "biome check .",
+    "db:generate": "cd apps/api && pnpm drizzle-kit generate",
+    "db:migrate": "cd apps/api && pnpm drizzle-kit migrate"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
