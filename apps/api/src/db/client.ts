@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as url from "node:url";
 import Database from "better-sqlite3";
@@ -22,9 +23,67 @@ function makeDb(sqlite: Database.Database): Db {
   return db;
 }
 
+function openDb(dbPath: string): Db {
+  const sqlite = new Database(dbPath);
+  try {
+    return makeDb(sqlite);
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+
+function isCorruptSqliteError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: string }).code;
+  return (
+    code === "SQLITE_CORRUPT" ||
+    code === "SQLITE_NOTADB" ||
+    /database disk image is malformed|file is not a database/i.test(error.message)
+  );
+}
+
+function nextCorruptBackupPath(dbPath: string): string {
+  const base = `${dbPath}.corrupt-${Date.now()}`;
+  if (!fs.existsSync(base)) return base;
+
+  let index = 1;
+  while (fs.existsSync(`${base}-${index}`)) {
+    index += 1;
+  }
+  return `${base}-${index}`;
+}
+
+function moveIfPresent(fromPath: string, toPath: string): void {
+  if (!fs.existsSync(fromPath)) return;
+  fs.renameSync(fromPath, toPath);
+}
+
+function rotateCorruptDbFiles(dbPath: string): string {
+  const backupPath = nextCorruptBackupPath(dbPath);
+  moveIfPresent(dbPath, backupPath);
+  moveIfPresent(`${dbPath}-wal`, `${backupPath}-wal`);
+  moveIfPresent(`${dbPath}-shm`, `${backupPath}-shm`);
+  return backupPath;
+}
+
 export function initDb(dbPath: string): Db {
-  _db = makeDb(new Database(dbPath));
-  return _db;
+  try {
+    _db = openDb(dbPath);
+    return _db;
+  } catch (error) {
+    if (!isCorruptSqliteError(error) || !fs.existsSync(dbPath)) {
+      throw error;
+    }
+
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const backupPath = rotateCorruptDbFiles(dbPath);
+    console.warn(
+      `[orc] recovered corrupt state DB: moved ${dbPath} to ${backupPath}`,
+    );
+    _db = openDb(dbPath);
+    return _db;
+  }
 }
 
 export function getDb(): Db {
