@@ -17,7 +17,6 @@ import { CommandQueue } from './events/commandQueues'
 import { getAllTasks } from './db/queries'
 import { seedSeqsFromDb } from './db/journal'
 import {
-  applyRunBranchToCurrentBranchSync,
   findRepoRootSync,
   getCurrentBranchSync,
   getHeadShaSync,
@@ -26,6 +25,7 @@ import {
 import { ensureDashboardServer } from './runtime/dashboard'
 import { getOrcAppRoots, getOrcPaths } from './runtime/paths'
 import { findAvailablePort } from './runtime/ports'
+import { waitForShutdownSignal } from './runtime/reviewReady'
 
 function resolveRepoRoot(): string {
   if (process.env.ORC_REPO_ROOT) return process.env.ORC_REPO_ROOT
@@ -159,29 +159,19 @@ program
     console.log(`[orc] run "${goal}" (run-id: ${opts.runId})`)
     const result = await m.run({ userGoal: goal })
     watchdog.stop()
-    if (result.status === 'done') {
-      if (startingBranch) {
-        const applied = applyRunBranchToCurrentBranchSync(REPO_ROOT, {
-          expectedBranch: startingBranch,
-          expectedHead: startingHead,
-          runBranch: result.runBranch,
-        })
-        if (applied.applied) {
-          console.log(`[orc] applied ${result.runBranch} to ${startingBranch}`)
-        } else {
-          console.warn(`[orc] warning: run completed but was not applied to ${startingBranch}: ${applied.reason}`)
-          console.warn(`[orc] preserved result branch: ${result.runBranch}`)
-          console.warn(`[orc] merged result worktree: ${path.join(ORC_PATHS.worktreesDir, `run-${opts.runId}`)}`)
-        }
-      } else {
-        console.warn('[orc] warning: run completed in detached HEAD state; result was not applied automatically.')
-        console.warn(`[orc] preserved result branch: ${result.runBranch}`)
-      }
+    if (result.status === 'review_ready') {
+      unregisterCleanup()
+      console.log(`[orc] orchestration complete; review ready at ${dashboard.url} | press Ctrl+C to shut down`)
+      await waitForShutdownSignal()
+      dashboard.stop()
+      server.close(() => process.exit(0))
+      return
     }
+
     console.log(`[orc] orchestration ${result.status}`)
     unregisterCleanup()
     dashboard.stop()
-    server.close(() => process.exit(result.status === 'done' ? 0 : 1))
+    server.close(() => process.exit(1))
   })
 
 program
