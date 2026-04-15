@@ -377,7 +377,16 @@ export async function ensureDashboardServer(
       } catch {}
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // No reusable server found — kill the stale process and retry.
+    const staleDetails = pickReusableDashboardDetails(error.output);
+    if (staleDetails?.pid) {
+      try {
+        process.kill(staleDetails.pid, "SIGTERM");
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
     return startDashboardServer(opts);
   }
 }
