@@ -835,6 +835,58 @@ describe('routes', () => {
     expect(chordsSection.workers[0].contextAvailable).toBe(true)
   })
 
+  it('GET /api/orchestration sets contextAvailable=true when any other section has a selected winner with worktree', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+
+    // bass-lead: done, winner selected, worktree exists
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertWorktree(db, 'r1-bass-v1', 'r1-bass-v1', '/tmp/r1-bass-v1', 'feat/r1-bass-v1', 'main')
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(id, lead_id, proposed_winner_worker_id, selected_winner_worker_id, target_branch, reviewer_reasoning, selection_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('bass-lead', 'bass-lead', 'r1-bass-v1', 'r1-bass-v1', 'lane/r1/bass', 'auto', 'proposal_accept')
+
+    // chords-lead: awaiting approval, NO depends_on edge
+    upsertTask(db, 'chords-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-chords-v1', 'worker', 'chords-lead', 'done')
+    upsertWorktree(db, 'r1-chords-v1', 'r1-chords-v1', '/tmp/r1-chords-v1', 'feat/r1-chords-v1', 'main')
+    // NOTE: no task_edges row — chords does NOT depend on bass
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    const chordsSection = res.body.sections.find((s: any) => s.id === 'chords')
+    expect(chordsSection.workers[0].contextAvailable).toBe(true)
+  })
+
+  it('GET /api/orchestration sets contextAvailable=false when no other section has an approved winner', async () => {
+    const db = createTestDb()
+
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+
+    // bass-lead: awaiting approval, no winner yet
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertWorktree(db, 'r1-bass-v1', 'r1-bass-v1', '/tmp/r1-bass-v1', 'feat/r1-bass-v1', 'main')
+
+    // chords-lead: also no winner
+    upsertTask(db, 'chords-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-chords-v1', 'worker', 'chords-lead', 'done')
+    upsertWorktree(db, 'r1-chords-v1', 'r1-chords-v1', '/tmp/r1-chords-v1', 'feat/r1-chords-v1', 'main')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    const chordsSection = res.body.sections.find((s: any) => s.id === 'chords')
+    expect(chordsSection.workers[0].contextAvailable).toBe(false)
+  })
+
   it('GET /api/entities/:entityId/logs returns the latest worker log window oldest-first', async () => {
     repoDir = initTestRepo('worker-logs-route')
     const db = createTestDb()
