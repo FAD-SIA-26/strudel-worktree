@@ -128,8 +128,8 @@ jobs:
 
           Use GitHub MCP to:
           1. Read the current pull request title and description.
-          2. Review the checked out branch against origin/${{ github.base_ref }}.
+          2. Review the checked out branch against origin/${{ github.base_ref }} by inspecting the git diff from origin/${{ github.base_ref }}...HEAD.
           3. Post exactly one review comment on pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
           EOF
 
-          codex -a never -s workspace-write review --base origin/${{ github.base_ref }} - < /tmp/codex-pr-review.md
+          codex -a never -s workspace-write exec - < /tmp/codex-pr-review.md
