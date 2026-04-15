@@ -46,15 +46,16 @@ Allowed mastermind states:
 - `planning`
 - `delegating`
 - `monitoring`
-- `merging`
+- `merging_lanes`
 
 Blocked mastermind states:
 
 - `idle`
+- `review_ready`
 - `done`
 - `failed`
 
-If the run is not active, the route rejects new steering messages and the dashboard does not show an enabled composer.
+If the run is not active, the route rejects new steering messages and the dashboard does not show an enabled composer. `review_ready` is explicitly non-steerable in this MVP because all orchestration decisions have already been made by that point.
 
 ### 4.2 Chat Model
 
@@ -71,6 +72,8 @@ Each user message is persisted immediately, then routed to the live mastermind c
 - request rejected because the run is no longer steerable
 
 The MVP is honest about its limits. A steering message may influence future prompt construction or future retries, but it does not silently rewrite already completed outputs and does not kill in-flight workers.
+
+The reply mechanism is deterministic in this MVP. Mastermind does not call `llmCall` to generate a chat reply. Instead, it emits one of a small set of fixed reply templates based on the outcome of steering evaluation.
 
 ### 4.3 Timing
 
@@ -135,6 +138,8 @@ Recommended statuses:
 
 The persisted transcript is the source of truth for the dashboard.
 
+`in_reply_to_id` is used only for mastermind replies. User messages store `null`. A mastermind reply points to the triggering user message so the backend preserves the one-to-one acknowledgment relationship even if the dashboard renders the transcript as a flat list.
+
 ### 5.4 Mastermind Integration
 
 `MastermindStateMachine` gains:
@@ -152,6 +157,19 @@ The state machine does not become a chat engine. Its responsibility is narrower:
 5. optionally update in-memory guidance used by future prompt builders
 
 The guidance should be appended or merged into future prompt context rather than retroactively rewriting persisted plans.
+
+Reply generation is deterministic and template-based. Mastermind does not perform an extra LLM round trip for steering acknowledgments. Required reply outcomes:
+
+- `accepted_future_guidance`
+  `Constraint noted. I will apply this guidance to upcoming planning and retries.`
+- `accepted_future_only`
+  `Guidance noted. It will affect future work only; completed outputs stay unchanged.`
+- `unsupported_mvp`
+  `I understood the request, but this chat only steers future work in this MVP.`
+- `not_steerable`
+  `Run is no longer active, so I cannot apply new steering.`
+
+If the steering handler fails after the user message has been persisted, the backend must not leave the message in `pending` indefinitely. It updates the user message to `rejected` or `delivery_failed` with an error string and does not create a synthetic mastermind reply.
 
 ## 6. Data and Contract Design
 
@@ -181,6 +199,8 @@ Required endpoints:
 
 - `runId` as a query parameter
 
+In the single-run MVP, `runId` must be the literal string `current`. The server resolves `current` to the single active run known to the backend. The dashboard should not invent its own run lookup scheme.
+
 `POST /api/steer` request shape:
 
 - `runId`
@@ -189,7 +209,8 @@ Required endpoints:
 Validation:
 
 - `message` must be present after trimming
-- reject when no active run matches `runId`
+- `runId` must equal `current`
+- reject when no active run matches `current`
 - reject when mastermind is not in a steerable state
 - reject when no mastermind queue is registered for that run
 
@@ -206,11 +227,13 @@ Use explicit API errors instead of silent acceptance.
 Examples:
 
 - `400` for invalid body
-- `404` when the run is unknown
+- `404` when the run is unknown or `runId` does not resolve to the single active run
 - `409` when the run exists but is not currently steerable
 - `503` when the run is active but the live mastermind transport is unavailable
 
 If persistence succeeds but queue delivery fails, the user message remains stored with `delivery_failed`. This avoids losing user intent and gives the UI something truthful to render.
+
+These semantics apply to both `GET /api/steer` and `POST /api/steer`. `GET /api/steer?runId=current` returns `404` when there is no active run or when the backend cannot resolve `current`.
 
 ## 7. Dashboard UX
 
@@ -222,7 +245,7 @@ The dashboard already renders a `mastermind` node in the hierarchy, but there is
 - composer
 - steerability status
 
-Selecting the mastermind row in the left tree should open this view instead of treating mastermind as a passive label.
+This must extend the existing dashboard layout, not create a parallel panel. Make the mastermind row selectable in `TreePanel`, and add a `selectedId === 'mastermind'` branch inside the existing `DetailPanel`. Selecting the mastermind row in the left tree should open this view instead of treating mastermind as a passive label.
 
 ### 7.2 Interaction Model
 
@@ -233,15 +256,21 @@ Behavior:
 1. user selects `mastermind`
 2. dashboard loads transcript for the active run
 3. user enters a freeform message
-4. UI adds the user message optimistically
+4. UI enters a local `sending` state and disables the composer
 5. UI posts to `/api/steer`
-6. UI refetches or invalidates transcript data
-7. mastermind reply appears when persisted by the backend
+6. on success, UI appends the persisted user message returned by the API response
+7. UI invalidates and refetches transcript data
+8. mastermind reply appears when persisted by the backend
+
+The MVP does not introduce a new WebSocket event for steering replies. Transcript freshness comes from explicit invalidation after submit plus normal query refetching while the mastermind detail view is active.
+
+The transcript renders oldest-to-newest with the composer anchored below it. On initial load the view scrolls to the bottom. When a new message arrives, the view auto-scrolls only if the user is already at or near the bottom.
 
 The composer must disable when:
 
 - there is no active run
 - the selected run is not steerable
+- mastermind state is `review_ready`
 - a submit is currently in flight
 
 ### 7.3 Reply Style
@@ -284,8 +313,9 @@ If a user asks for something outside MVP scope, mastermind replies clearly and d
 Use the simplest durable rule for MVP:
 
 - maintain a list of handled user steering messages for the active run
-- include recent handled steering guidance in future mastermind and PM prompt context
-- keep the formatting explicit, such as a `User steering guidance:` section
+- include only the last 5 handled user steering messages, oldest-to-newest, in future mastermind and PM prompt context
+- do not include mastermind reply messages in prompt context
+- render guidance in an explicit prompt block named `User steering guidance:`, with one bullet per included user message
 
 This is enough to prove product value without inventing a complex memory or ranking system.
 
@@ -296,6 +326,7 @@ This is enough to prove product value without inventing a complex memory or rank
 Add route coverage for:
 
 - `GET /api/steer` returns transcript and steerable flag
+- `GET /api/steer` returns `404` when `runId=current` cannot be resolved
 - `POST /api/steer` rejects empty messages
 - `POST /api/steer` rejects inactive runs
 - `POST /api/steer` persists a user message and enqueues a mastermind command
@@ -306,6 +337,7 @@ Add route coverage for:
 Add mastermind-focused tests for:
 
 - consuming a steering command and persisting a reply
+- using deterministic reply templates rather than `llmCall`
 - storing handled guidance for future prompt construction
 - acknowledging unsupported requests without mutating completed work
 - ignoring or rejecting steering when the run is no longer active
@@ -316,8 +348,9 @@ Add targeted UI verification for:
 
 - selecting mastermind opens the transcript surface
 - transcript renders both user and mastermind messages
+- mastermind selection is handled inside the existing detail panel layout
 - composer is enabled only for active runs
-- optimistic user messages do not disappear after refetch
+- response-based user messages do not disappear after refetch
 - backend error states are rendered clearly
 
 ## 10. File Boundaries
@@ -343,7 +376,7 @@ The MVP is complete when all of the following are true:
 - sending a message calls a real `/api/steer` backend path
 - the user message is persisted for the active run
 - the live mastermind instance is signaled through a real command queue
-- mastermind posts a persisted reply visible in the dashboard
+- mastermind posts a deterministic persisted reply visible in the dashboard
 - steering affects only future work and future prompts
-- inactive runs cannot be steered
+- `review_ready`, `done`, and `failed` runs cannot be steered
 - tests cover the new route, persistence, and mastermind handling path
