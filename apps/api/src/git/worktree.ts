@@ -154,6 +154,10 @@ export async function getWorktreeDiff(
   }
 }
 
+export async function getWorktreePatch(wtPath: string, baseBranch: string): Promise<string> {
+  try { return await git(wtPath, ['diff', baseBranch]) } catch { return '' }
+}
+
 export async function hasUncommittedChanges(wtPath: string): Promise<boolean> {
   try {
     return (await git(wtPath, ["status", "--porcelain"])).length > 0;

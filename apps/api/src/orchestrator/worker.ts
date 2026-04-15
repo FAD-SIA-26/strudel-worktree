@@ -1,211 +1,162 @@
-import * as path from "node:path";
-import type { OrcEvent } from "@orc/types";
-import type { WorkerAgent, WorkerHeartbeat, WorkerTask } from "../agents/types";
-import { type Db, getSQLite } from "../db/client";
-import { nextSeq, writeEvent } from "../db/journal";
-import { upsertTask, upsertWorktree } from "../db/queries";
-import { createWorkerPlan } from "../git/planFiles";
-import { commitWorktreeChanges, createWorktree } from "../git/worktree";
-import { getOrcPaths } from "../runtime/paths";
-import type { ConcurrencyGovernor } from "./concurrency";
+import * as path from 'node:path'
+import type { WorkerTask, WorkerAgent, WorkerHeartbeat } from '../agents/types'
+import { getSQLite, type Db } from '../db/client'
+import { writeEvent, nextSeq } from '../db/journal'
+import { upsertArtifact, upsertTask, upsertWorktree } from '../db/queries'
+import { commitWorktreeChanges, createWorktree } from '../git/worktree'
+import { createWorkerPlan } from '../git/planFiles'
+import { ConcurrencyGovernor } from './concurrency'
+import type { OrcEvent } from '@orc/types'
+import { getOrcPaths } from '../runtime/paths'
 
-export type WorkerState =
-  | "queued"
-  | "spawning"
-  | "running"
-  | "stalled"
-  | "zombie"
-  | "done"
-  | "failed"
-  | "retrying"
-  | "cancelled";
+export type WorkerState = 'queued'|'spawning'|'running'|'stopping'|'stop_failed'|'stalled'|'zombie'|'done'|'failed'|'retrying'|'cancelled'
 
 interface WorkerConfig {
-  id: string;
-  leadId: string;
-  sectionId: string;
-  branch: string;
-  baseBranch: string;
-  repoRoot: string;
-  runId: string;
-  db: Db;
-  governor: ConcurrencyGovernor;
-  agentFactory: () => WorkerAgent;
-  leadPlanPath?: string;
-  runPlanPath?: string;
+  id:           string
+  leadId:       string
+  sectionId:    string
+  branch:       string
+  baseBranch:   string
+  repoRoot:     string
+  runId:        string
+  db:           Db
+  governor:     ConcurrencyGovernor
+  agentFactory: () => WorkerAgent
+  leadPlanPath?: string
+  runPlanPath?:  string
+  domainSkillName?: string
+  domainSkillContent?: string
 }
 
 export class WorkerStateMachine {
-  state: WorkerState = "queued";
-  readonly id: string;
-  readonly branch: string;
-  private agent: WorkerAgent | null = null;
-  private slotHeld = false;
-  private lastHeartbeatEventAt = 0;
+  state: WorkerState = 'queued'
+  readonly id: string
+  readonly branch: string
+  private agent: WorkerAgent | null = null
+  private slotHeld = false
+  private lastHeartbeatEventAt = 0
 
   constructor(private readonly cfg: WorkerConfig) {
-    this.id = cfg.id;
-    this.branch = cfg.branch;
+    this.id     = cfg.id
+    this.branch = cfg.branch
   }
 
-  private emit(
-    eventType: OrcEvent["eventType"],
-    payload: Record<string, unknown>,
-  ): void {
+  private emit(eventType: OrcEvent['eventType'], payload: Record<string, unknown>): void {
     const event: OrcEvent = {
       entityId: this.cfg.id,
-      entityType: "worker",
+      entityType: 'worker',
       eventType,
       sequence: nextSeq(this.cfg.id),
       ts: Date.now(),
       payload,
-    } as OrcEvent;
+    } as OrcEvent
     writeEvent(this.cfg.db, event, () => {
-      upsertTask(
-        this.cfg.db,
-        this.cfg.id,
-        "worker",
-        this.cfg.leadId,
-        this.state,
-      );
-    });
+      upsertTask(this.cfg.db, this.cfg.id, 'worker', this.cfg.leadId, this.state)
+    })
   }
 
   private recordHeartbeat(heartbeat: WorkerHeartbeat): void {
-    const now = heartbeat.ts ?? Date.now();
-    const sqlite = getSQLite(this.cfg.db);
-    sqlite
-      .prepare(`
+    const now = heartbeat.ts ?? Date.now()
+    const sqlite = getSQLite(this.cfg.db)
+    sqlite.prepare(`
       INSERT INTO runs(id,entity_id,adapter_type,pid,started_at,last_seen_at)
       VALUES(?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         adapter_type=excluded.adapter_type,
         pid=COALESCE(excluded.pid, runs.pid),
         last_seen_at=excluded.last_seen_at
-    `)
-      .run(this.cfg.id, this.cfg.id, "worker", heartbeat.pid ?? null, now, now);
-    sqlite
-      .prepare("UPDATE tasks SET state='running', updated_at=? WHERE id=?")
-      .run(now, this.cfg.id);
+    `).run(this.cfg.id, this.cfg.id, 'worker', heartbeat.pid ?? null, now, now)
+    sqlite.prepare("UPDATE tasks SET state='running', updated_at=? WHERE id=?").run(now, this.cfg.id)
 
-    const output = heartbeat.output?.trim();
-    if (!output) return;
-    if (now - this.lastHeartbeatEventAt < 5_000) return;
-    this.lastHeartbeatEventAt = now;
-    this.emit("WorkerProgress", { output: output.slice(0, 500), ts: now });
+    const output = heartbeat.output?.trim()
+    if (!output) return
+    if (now - this.lastHeartbeatEventAt < 5_000) return
+    this.lastHeartbeatEventAt = now
+    this.emit('WorkerProgress', { output: output.slice(0, 500), ts: now })
   }
 
-  async run(task: WorkerTask): Promise<{
-    status: "done" | "failed";
-    branch: string;
-    diff?: string;
-    error?: string;
-  }> {
-    this.state = "queued";
-    this.emit("CommandIssued", {
-      from: this.cfg.leadId,
-      to: this.cfg.id,
-      commandType: "SpawnWorker",
-      commandPayload: {},
-    });
+  async run(task: WorkerTask): Promise<{ status: 'done'|'failed'; branch: string; diff?: string; error?: string }> {
+    this.state = 'queued'
+    this.emit('CommandIssued', { from: this.cfg.leadId, to: this.cfg.id, commandType: 'SpawnWorker', commandPayload: {} })
 
-    await this.cfg.governor.acquire();
-    this.slotHeld = true;
-    this.state = "spawning";
-    this.emit("WorkerProgress", {
-      output: "creating worktree",
-      ts: Date.now(),
-    });
+    await this.cfg.governor.acquire()
+    this.slotHeld = true
+    this.state = 'spawning'
+    this.emit('WorkerProgress', { output: 'creating worktree', ts: Date.now() })
 
-    const wtPath = path.join(
-      getOrcPaths(this.cfg.repoRoot).worktreesDir,
-      this.cfg.id,
-    );
+    const wtPath = path.join(getOrcPaths(this.cfg.repoRoot).worktreesDir, this.cfg.id)
     try {
-      await createWorktree(this.cfg.repoRoot, wtPath, this.cfg.branch);
-    } catch (err) {
-      if (!(err instanceof Error) || !err.message.includes("already exists")) {
-        throw err;
+      await createWorktree(this.cfg.repoRoot, wtPath, this.cfg.branch)
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes('already exists')) {
+        throw error
       }
     }
 
-    upsertWorktree(
-      this.cfg.db,
-      this.cfg.id,
-      this.cfg.id,
-      wtPath,
-      this.cfg.branch,
-      this.cfg.baseBranch,
-    );
+    upsertWorktree(this.cfg.db, this.cfg.id, this.cfg.id, wtPath, this.cfg.branch, this.cfg.baseBranch)
 
     const planPath = await createWorkerPlan(wtPath, {
-      workerId: this.cfg.id,
-      objective: task.prompt,
-      strategy: task.strategy ?? "default",
-    });
+      workerId:   this.cfg.id,
+      objective:  task.prompt,
+      strategy:   task.strategy ?? 'default',
+    })
+    upsertArtifact(this.cfg.db, this.cfg.id, 'worker_plan', planPath)
 
-    this.state = "running";
-    this.recordHeartbeat({ ts: Date.now(), output: "worker initialized" });
-    this.emit("WorkerProgress", { output: "agent started", ts: Date.now() });
+    this.state = 'running'
+    this.recordHeartbeat({ ts: Date.now(), output: 'worker initialized' })
+    this.emit('WorkerProgress', { output: 'agent started', ts: Date.now() })
 
-    this.agent = this.cfg.agentFactory();
+    this.agent = this.cfg.agentFactory()
     const result = await this.agent.run(task, {
       worktreePath: wtPath,
-      branch: this.cfg.branch,
-      baseBranch: this.cfg.baseBranch,
-      entityId: this.cfg.id,
+      branch:       this.cfg.branch,
+      baseBranch:   this.cfg.baseBranch,
+      entityId:     this.cfg.id,
       planPath,
-      leadPlanPath: this.cfg.leadPlanPath ?? "",
-      runPlanPath: this.cfg.runPlanPath ?? "",
-      onHeartbeat: (heartbeat) => this.recordHeartbeat(heartbeat),
-    });
+      leadPlanPath: this.cfg.leadPlanPath ?? '',
+      runPlanPath:  this.cfg.runPlanPath  ?? '',
+      domainSkillName: this.cfg.domainSkillName,
+      domainSkillContent: this.cfg.domainSkillContent,
+      onHeartbeat:  heartbeat => this.recordHeartbeat(heartbeat),
+      onSessionLogOpened: sessionPath => upsertArtifact(this.cfg.db, this.cfg.id, 'session_log', sessionPath),
+    })
 
-    if (this.slotHeld) {
-      this.cfg.governor.release();
-      this.slotHeld = false;
-    }
+    if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }
 
-    if (result.status === "done") {
+    if (result.status === 'done') {
       try {
-        await commitWorktreeChanges(wtPath, `orc: complete ${this.cfg.id}`);
-      } catch (err) {
-        const message =
-          err instanceof Error
-            ? err.message
-            : "failed to commit worker changes";
-        this.state = "failed";
-        this.emit("WorkerFailed", {
-          error: message,
-          retryable: true,
-        });
-        return {
-          status: "failed",
-          branch: result.branch,
-          error: message,
-        };
+        await commitWorktreeChanges(
+          wtPath,
+          `orc: complete ${this.cfg.id}`,
+        )
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'failed to commit worker changes'
+        this.state = 'failed'
+        this.emit('WorkerFailed', { error: message, retryable: true })
+        return { status: 'failed', branch: result.branch, error: message }
       }
-      this.state = "done";
-      this.emit("WorkerDone", {
-        branch: result.branch,
-        diff: result.diff ?? "",
-      });
+      this.state = 'done'
+      this.emit('WorkerDone', { branch: result.branch, diff: result.diff ?? '' })
     } else {
-      this.state = "failed";
-      this.emit("WorkerFailed", {
-        error: result.error ?? "unknown",
-        retryable: result.retryable,
-      });
+      this.state = 'failed'
+      this.emit('WorkerFailed', { error: result.error ?? 'unknown', retryable: result.retryable })
     }
-    return result;
+    return result
   }
 
   async abort(): Promise<void> {
-    if (this.slotHeld) {
-      this.cfg.governor.release();
-      this.slotHeld = false;
+    if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }
+    this.state = 'stopping'
+    this.emit('WorkerStopping', { reason: 'lead selected another winner' })
+    try {
+      await this.agent?.abort()
+      this.state = 'cancelled'
+      this.emit('WorkerFailed', { error: 'aborted', retryable: false })
+    } catch (error: unknown) {
+      this.state = 'stop_failed'
+      this.emit('WorkerStopFailed', {
+        reason: error instanceof Error ? error.message : 'abort failed',
+      })
     }
-    this.state = "cancelled";
-    await this.agent?.abort();
-    this.emit("WorkerFailed", { error: "aborted", retryable: false });
   }
 }

@@ -49,8 +49,8 @@ function makeProc() {
 describe("CodexCLIAdapter", () => {
   beforeEach(() => {
     vi.useRealTimers();
-    process.env.CODEX_THREAD_ID = undefined;
-    process.env.CODEX_CI = undefined;
+    delete process.env.CODEX_THREAD_ID;
+    delete process.env.CODEX_CI;
     spawnMock.mockReset();
     getWorktreeDiffMock.mockReset();
     writeDoneMarkerMock.mockReset();
@@ -71,6 +71,7 @@ describe("CodexCLIAdapter", () => {
       close: vi.fn().mockResolvedValue(undefined),
     });
     const onHeartbeat = vi.fn();
+    const onSessionLogOpened = vi.fn();
 
     const runPromise = new CodexCLIAdapter().run(
       { id: "w1", prompt: "do the thing", maxRetries: 1, errorHistory: [] },
@@ -82,7 +83,10 @@ describe("CodexCLIAdapter", () => {
         planPath: "worker-plan.md",
         leadPlanPath: "lead-plan.md",
         runPlanPath: "run-plan.md",
+        domainSkillName: "strudel",
+        domainSkillContent: "# Strudel contract\n- lane only\n",
         onHeartbeat,
+        onSessionLogOpened,
       },
     );
 
@@ -126,6 +130,8 @@ describe("CodexCLIAdapter", () => {
       "prefer package-local binaries like ./apps/web/node_modules/.bin/next",
     );
     expect(prompt).toContain("Update .orc/worker-plan.md");
+    expect(prompt).toContain("Domain skill: strudel");
+    expect(prompt).toContain("# Strudel contract");
     expect(onHeartbeat).toHaveBeenCalledWith(
       expect.objectContaining({
         pid: expect.any(Number),
@@ -135,14 +141,52 @@ describe("CodexCLIAdapter", () => {
     expect(onHeartbeat).toHaveBeenCalledWith(
       expect.objectContaining({ output: "worker output\n" }),
     );
+    expect(onSessionLogOpened).toHaveBeenCalledWith(
+      path.join(worktreePath, ".orc", ".orc-session.jsonl"),
+    );
     expect(result).toEqual({
       status: "done",
       branch: "feat/w1",
       diff: "+ diff",
       retryable: false,
     });
-    process.env.CODEX_THREAD_ID = undefined;
-    process.env.CODEX_CI = undefined;
+    delete process.env.CODEX_THREAD_ID;
+    delete process.env.CODEX_CI;
+  });
+
+  it("omits domain skill prompt block when no domain skill content is provided", async () => {
+    const proc = makeProc();
+    spawnMock.mockReturnValue(proc);
+    getWorktreeDiffMock.mockResolvedValue("+ diff");
+    writeDoneMarkerMock.mockResolvedValue(undefined);
+
+    const worktreePath = path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`);
+    openMock.mockResolvedValue({
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const runPromise = new CodexCLIAdapter().run(
+      { id: "w4", prompt: "do the thing", maxRetries: 1, errorHistory: [] },
+      {
+        worktreePath,
+        branch: "feat/w4",
+        baseBranch: "main",
+        entityId: "w4",
+        planPath: "worker-plan.md",
+        leadPlanPath: "lead-plan.md",
+        runPlanPath: "run-plan.md",
+      },
+    );
+
+    setImmediate(() => {
+      proc.stdout.emit("data", Buffer.from("worker output\n"));
+      proc.emit("close", 0);
+    });
+
+    await runPromise;
+    const prompt = spawnMock.mock.calls[0]?.[1]?.[3];
+    expect(prompt).not.toContain("Domain skill:");
   });
 
   it("emits periodic heartbeats while codex is still running", async () => {

@@ -1,33 +1,31 @@
 #!/usr/bin/env node
+import type { OrcCommand } from "@orc/types";
+import { Command } from "commander";
 import * as fs from "node:fs/promises";
 import * as http from "node:http";
 import * as path from "node:path";
 import * as url from "node:url";
-import type { OrcCommand } from "@orc/types";
-import { Command } from "commander";
 import { CodexCLIAdapter } from "./agents/codex-cli";
 import { MockAgent } from "./agents/mock";
 import { initDb } from "./db/client";
 import { seedSeqsFromDb } from "./db/journal";
 import { getAllTasks } from "./db/queries";
-import type { CommandQueue } from "./events/commandQueues";
+import { CommandQueue } from "./events/commandQueues";
 import {
-  applyRunBranchToCurrentBranchSync,
   findRepoRootSync,
   getCurrentBranchSync,
   getHeadShaSync,
   hasCommittedHeadSync,
 } from "./git/worktree";
 import { ConcurrencyGovernor } from "./orchestrator/concurrency";
+import { resolveDomainSkill, resolveTemplateSelection } from "./orchestrator/domainSkill";
 import { createLLMClientFromEnv } from "./orchestrator/llm";
 import { MastermindStateMachine } from "./orchestrator/mastermind";
 import { Watchdog } from "./orchestrator/watchdog";
 import { ensureDashboardServer } from "./runtime/dashboard";
-import {
-  getOrcAppRoots,
-  getOrcPaths,
-  resolveOrcAssetPath,
-} from "./runtime/paths";
+import { getOrcAppRoots, getOrcPaths } from "./runtime/paths";
+import { findAvailablePort } from "./runtime/ports";
+import { waitForShutdownSignal } from "./runtime/reviewReady";
 import { createApp } from "./server/app";
 import { attachWebSocket } from "./server/wsHandler";
 
@@ -43,29 +41,13 @@ function resolveRepoRoot(): string {
 }
 
 const REPO_ROOT = resolveRepoRoot();
-const { apiRoot: API_ROOT, webRoot: WEB_ROOT } = getOrcAppRoots(
-  import.meta.url,
-);
+const { webRoot: WEB_ROOT } = getOrcAppRoots(import.meta.url);
 const ORC_PATHS = getOrcPaths(REPO_ROOT);
 const DB_PATH = process.env.ORC_DB_PATH ?? ORC_PATHS.dbPath;
 const PORT = Number.parseInt(process.env.ORC_PORT ?? "4000");
 const DASHBOARD_PORT = Number.parseInt(
   process.env.ORC_DASHBOARD_PORT ?? "3000",
 );
-
-function selectDefaultTemplatePath(goal: string): string | undefined {
-  if (
-    !/\b(track|song|beat|melody|chords|bass|drums|strudel|arrangement)\b/i.test(
-      goal,
-    )
-  )
-    return undefined;
-  return resolveOrcAssetPath(
-    import.meta.url,
-    "templates",
-    "strudel-track.toml",
-  );
-}
 
 function registerCleanup(cleanup: () => void): () => void {
   const handler = () => {
@@ -87,8 +69,9 @@ program
   .option("-m, --max-workers <n>", "max concurrent workers", "4")
   .option("--mock", "use MockAgent (deterministic, no real Codex)")
   .option("--run-id <id>", "custom run ID", `run-${Date.now()}`)
+  .option("--skill <name>", "worker domain skill (for example: strudel)")
+  .option("--template <name>", "explicit template name (without .toml extension)")
   .action(async (goal: string, opts) => {
-    // orc requires a git repo — branches and worktrees are how it isolates parallel work
     try {
       const { execSync } = await import("node:child_process");
       execSync("git rev-parse --git-dir", { cwd: REPO_ROOT, stdio: "pipe" });
@@ -115,28 +98,31 @@ program
     const startingBranch = getCurrentBranchSync(REPO_ROOT);
     const startingHead = getHeadShaSync(REPO_ROOT);
     const baseBranch = startingBranch ?? startingHead;
-    const templatePath = selectDefaultTemplatePath(goal);
+    const domainSkill = await resolveDomainSkill(REPO_ROOT, opts.skill);
+    const templatePath = await resolveTemplateSelection({
+      repoRoot: REPO_ROOT,
+      userGoal: goal,
+      explicitTemplateName: opts.template,
+      skillName: opts.skill,
+    });
 
     await fs.mkdir(ORC_PATHS.stateDir, { recursive: true });
 
     const db = initDb(DB_PATH);
-    seedSeqsFromDb(db); // prevent UNIQUE violations if DB already has sequences from a prior run
+    seedSeqsFromDb(db);
     const gov = new ConcurrencyGovernor(Number.parseInt(opts.maxWorkers));
     const leadQs = new Map<string, CommandQueue<OrcCommand>>();
+    const apiPort = await findAvailablePort(PORT);
     const dashboard = await ensureDashboardServer({
-      apiPort: PORT,
+      apiPort,
       dashboardPort: DASHBOARD_PORT,
       stateDir: ORC_PATHS.stateDir,
       webRoot: WEB_ROOT,
     });
-    const app = createApp({
-      db,
-      leadQueues: leadQs,
-      dashboardUrl: dashboard.url,
-    });
+    const app = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url });
     const server = http.createServer(app);
     attachWebSocket(server);
-    await new Promise<void>((resolve) => server.listen(PORT, resolve));
+    await new Promise<void>((resolve) => server.listen(apiPort, resolve));
     const unregisterCleanup = registerCleanup(() => {
       dashboard.stop();
       server.close();
@@ -144,8 +130,8 @@ program
 
     console.log(
       dashboard.url
-        ? `[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${PORT}`
-        : `[orc] api → http://localhost:${PORT}  |  dashboard disabled in packaged install`,
+        ? `[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${apiPort}`
+        : `[orc] api → http://localhost:${apiPort}  |  dashboard disabled in packaged install`,
     );
 
     const watchdog = new Watchdog({
@@ -164,11 +150,9 @@ program
       agentFactory: opts.mock
         ? () => new MockAgent({ delayMs: 200, outcome: "done" })
         : () => new CodexCLIAdapter(),
-      // In --mock mode, use a stub LLM that returns a sensible Strudel decomposition
-      // so the demo works without an API key
       llmCall: opts.mock
-        ? async (p: string) => {
-            if (p.includes("Decompose") || p.includes("decompose")) {
+        ? async (prompt: string) => {
+            if (prompt.includes("Decompose") || prompt.includes("decompose")) {
               return JSON.stringify([
                 {
                   id: "drums",
@@ -186,30 +170,29 @@ program
                   id: "chords",
                   goal: "Write chord pattern in Strudel.js",
                   numWorkers: 2,
-                  dependsOn: ["bass"],
+                  dependsOn: [],
                 },
                 {
                   id: "melody",
                   goal: "Write lead melody in Strudel.js",
                   numWorkers: 3,
-                  dependsOn: ["chords"],
+                  dependsOn: [],
                 },
                 {
                   id: "arrangement",
                   goal: "Write final Strudel.js arrangement",
                   numWorkers: 1,
-                  dependsOn: ["drums", "bass", "chords", "melody"],
+                  dependsOn: [],
                 },
               ]);
             }
-            if (p.includes("Generate") || p.includes("prompts")) {
+            if (prompt.includes("Generate") || prompt.includes("prompts")) {
               return JSON.stringify([
                 "Write a minimal lo-fi pattern",
                 "Write a rhythmic groove pattern",
               ]);
             }
-            // reviewer — pick v1
-            const match = p.match(/([\w-]+-v1)/);
+            const match = prompt.match(/([\w-]+-v1)/);
             return JSON.stringify({
               winnerId: match?.[1] ?? "drums-v1",
               reasoning: "mock reviewer selected v1",
@@ -218,44 +201,35 @@ program
         : createLLMClientFromEnv(),
       leadQueues: leadQs,
       templatePath,
+      domainSkillName: domainSkill?.name,
+      domainSkillContent: domainSkill?.content,
       maxConcurrentWorkers: Number.parseInt(opts.maxWorkers),
     });
 
+    if (domainSkill) {
+      console.log(`[orc] using worker skill ${domainSkill.name}`);
+    }
     if (templatePath) {
       console.log(`[orc] using template ${path.basename(templatePath)}`);
     }
     console.log(`[orc] run "${goal}" (run-id: ${opts.runId})`);
     const result = await m.run({ userGoal: goal });
     watchdog.stop();
-    if (result.status === "done") {
-      if (startingBranch) {
-        const applied = applyRunBranchToCurrentBranchSync(REPO_ROOT, {
-          expectedBranch: startingBranch,
-          expectedHead: startingHead,
-          runBranch: result.runBranch,
-        });
-        if (applied.applied) {
-          console.log(`[orc] applied ${result.runBranch} to ${startingBranch}`);
-        } else {
-          console.warn(
-            `[orc] warning: run completed but was not applied to ${startingBranch}: ${applied.reason}`,
-          );
-          console.warn(`[orc] preserved result branch: ${result.runBranch}`);
-          console.warn(
-            `[orc] merged result worktree: ${path.join(ORC_PATHS.worktreesDir, `run-${opts.runId}`)}`,
-          );
-        }
-      } else {
-        console.warn(
-          "[orc] warning: run completed in detached HEAD state; result was not applied automatically.",
-        );
-        console.warn(`[orc] preserved result branch: ${result.runBranch}`);
-      }
+    if (result.status === "review_ready") {
+      unregisterCleanup();
+      console.log(
+        `[orc] orchestration complete; review ready at ${dashboard.url} | press Ctrl+C to shut down`,
+      );
+      await waitForShutdownSignal();
+      dashboard.stop();
+      server.close(() => process.exit(0));
+      return;
     }
+
     console.log(`[orc] orchestration ${result.status}`);
     unregisterCleanup();
     dashboard.stop();
-    server.close(() => process.exit(result.status === "done" ? 0 : 1));
+    server.close(() => process.exit(1));
   });
 
 program.command("status").action(() => {
@@ -274,32 +248,31 @@ program
     const db = initDb(DB_PATH);
     seedSeqsFromDb(db);
     const leadQs = new Map<string, CommandQueue<OrcCommand>>();
+    const apiPort = await findAvailablePort(PORT);
     const dashboard = await ensureDashboardServer({
-      apiPort: PORT,
+      apiPort,
       dashboardPort: DASHBOARD_PORT,
       stateDir: ORC_PATHS.stateDir,
       webRoot: WEB_ROOT,
     });
-    const app = createApp({
-      db,
-      leadQueues: leadQs,
-      dashboardUrl: dashboard.url,
-    });
+    const app = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url });
     const server = http.createServer(app);
     attachWebSocket(server);
-    await new Promise<void>((resolve) => server.listen(PORT, resolve));
+    await new Promise<void>((resolve) => server.listen(apiPort, resolve));
     registerCleanup(() => {
       dashboard.stop();
       server.close();
     });
-    console.log(`[orc] resumed dashboard at ${dashboard.url}`);
-    const inFlight = getAllTasks(db).filter((t) =>
-      ["running", "queued", "stalled", "zombie"].includes(t.state),
+    console.log(`[orc] resumed dashboard at ${dashboard.url}  |  api → http://localhost:${apiPort}`);
+    const inFlight = getAllTasks(db).filter((task) =>
+      ["running", "queued", "stalled", "zombie"].includes(task.state),
     );
     if (inFlight.length) {
       console.log("[orc] in-flight tasks:");
       console.table(inFlight);
-    } else console.log("[orc] no in-flight tasks found");
+    } else {
+      console.log("[orc] no in-flight tasks found");
+    }
   });
 
 program.parse();

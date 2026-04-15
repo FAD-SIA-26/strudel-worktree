@@ -12,7 +12,9 @@
   Worker progress exists in the journal and `.orc-session.jsonl`, but the dashboard still lacks a reliable per-worker / per-lead log view that lets the user inspect what Codex actually did. This should also cover real plan rendering, real diff rendering, artifact-backed file paths, and the current `.orc/worktrees/...` path layout instead of the stale `.worktrees/...` hints.
 
 - [ ] Add a real chat / steering interface with the `Mastermind`.
-  The MVP needs a user-facing control surface to inject constraints, redirect a run, ask for retries, or refine the goal without dropping into code or the terminal. `/api/steer` is still only a stub, so this should be treated as a real routed command path, not just a text box.
+  Paused after backend-heavy work in the `feat/mastermind-steering-chat` worktree.
+  Done so far: shared `MastermindCommand` / steering contracts, `steering_messages` persistence, routed `/api/steer` service + queue plumbing, deterministic mastermind replies, guidance folding, resumed-run resolution, and targeted backend test coverage.
+  Left to do: finish the last backend state-persistence cleanup, build the dashboard `mastermind` chat UI inside the existing `TreePanel` / `DetailPanel`, then run end-to-end verification including Playwright CLI before merging it back.
 
 - [ ] Improve the Strudel compare / listen workflow.
   The core demo should make sibling worker variants easy to audition side by side, then approve one winner per lane with minimal friction.

@@ -1,0 +1,2 @@
+[      99ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:4102/api/orchestration:0
+[     103ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:4102/' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:3102/_next/static/chunks/0l7m_strudel-worktree__worktrees_user-gated-lane-review_apps_web_src_0b~_s65._.js:18
