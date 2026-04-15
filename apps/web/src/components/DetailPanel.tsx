@@ -4,6 +4,8 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { SectionInfo, WorkerInfo } from '@orc/types'
 import { launchWorkerPreview } from '../lib/previewActions'
 import { getProposedWorker, getSelectedWorker } from '../lib/reviewState'
+import { useEntityDetail } from '../hooks/useEntityDetail'
+import { useEntityLogs } from '../hooks/useEntityLogs'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 
@@ -31,6 +33,36 @@ function CodeBlock({ children, color = 'blue' }: { children: string; color?: 'bl
   )
 }
 
+function TextPanel({
+  label,
+  pathValue,
+  content,
+  emptyMessage,
+}: {
+  label: string
+  pathValue?: string | null
+  content: string | null | undefined
+  emptyMessage: string
+}) {
+  return (
+    <div className="max-w-3xl space-y-3">
+      {pathValue ? (
+        <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-2">
+          <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
+            {label} path
+          </span>
+          <CodeBlock>{pathValue}</CodeBlock>
+        </div>
+      ) : null}
+      <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4">
+        <pre className="whitespace-pre-wrap break-words text-[11px] text-gray-300 font-mono leading-relaxed">
+          {content && content.length > 0 ? content : emptyMessage}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
 function previewFor(worker: WorkerInfo, mode: 'solo' | 'contextual') {
   return worker.previewArtifacts.find(p => p.mode === mode)
 }
@@ -41,7 +73,9 @@ export function DetailPanel({ selectedId, sections }: {
 }) {
   const qc = useQueryClient()
   const isLead = selectedId?.endsWith('-lead') ?? false
-  const [tab, setTab] = useState<'compare' | 'plan' | 'logs' | 'preview'>(
+  const { data: detail } = useEntityDetail(selectedId)
+  const logs = useEntityLogs(selectedId)
+  const [tab, setTab] = useState<'compare' | 'plan' | 'logs' | 'diff' | 'preview'>(
     isLead ? 'compare' : 'plan'
   )
   const [pendingWinnerId, setPendingWinnerId] = useState<string | null>(null)
@@ -124,13 +158,14 @@ export function DetailPanel({ selectedId, sections }: {
   }
 
   const tabs = isLead
-    ? (['compare', 'plan', 'logs'] as const)
-    : (['plan', 'logs', 'preview'] as const)
+    ? (['compare', 'plan', 'logs', 'diff'] as const)
+    : (['plan', 'logs', 'diff', 'preview'] as const)
 
   const TAB_LABEL: Record<string, string> = {
     compare: 'Compare',
     plan: 'Plan',
     logs: 'Logs',
+    diff: 'Diff',
     preview: 'Preview',
   }
 
@@ -193,7 +228,7 @@ export function DetailPanel({ selectedId, sections }: {
         {tabs.map(t => (
           <button
             key={t}
-            onClick={() => setTab(t as typeof tab)}
+            onClick={() => setTab(t)}
             className={`relative px-3 py-2 text-[11px] font-medium transition-colors ${
               tab === t ? 'text-blue-400' : 'text-gray-600 hover:text-gray-400'
             }`}
@@ -368,53 +403,51 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
 
-        {tab === 'plan' && (
-          <div className="max-w-xl space-y-3">
-            <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-3">
-              <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
-                File path
-              </span>
-              <CodeBlock>
-                {isLead
-                  ? `.orc/runs/current/leads/${sectionId}.md`
-                  : `.orc/worktrees/${selectedId}/.orc/worker-plan.md`}
-              </CodeBlock>
-              <p className="text-[11px] text-gray-600">
-                Markdown file — open in your editor to view.
-              </p>
+        {tab === 'plan' && detail && (
+          <TextPanel
+            label="Plan"
+            pathValue={detail.resolvedPaths.planPath}
+            content={detail.plan.content}
+            emptyMessage={detail.plan.message ?? 'Plan not available yet.'}
+          />
+        )}
+
+        {tab === 'logs' && detail && (
+          <div className="max-w-3xl space-y-3">
+            {detail.entityType === 'worker' && detail.resolvedPaths.logPath ? (
+              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-2">
+                <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
+                  Log path
+                </span>
+                <CodeBlock>{detail.resolvedPaths.logPath}</CodeBlock>
+              </div>
+            ) : null}
+            <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4">
+              <div className="space-y-2">
+                {logs.entries.length > 0 ? logs.entries.map(entry => (
+                  <div key={entry.id} className="border border-[#1c2738] rounded px-3 py-2 bg-[#0b0e14]">
+                    <div className="text-[10px] text-gray-500 font-mono">{entry.title}</div>
+                    <pre className="whitespace-pre-wrap break-words text-[11px] text-gray-300 font-mono leading-relaxed">{entry.body}</pre>
+                  </div>
+                )) : (
+                  <p className="text-[11px] text-gray-600">
+                    {logs.status === 'loading'
+                      ? 'Loading logs...'
+                      : logs.error ?? 'No logs available yet.'}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         )}
 
-        {tab === 'logs' && (
-          <div className="max-w-xl space-y-3">
-            {isLead ? (
-              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4">
-                <p className="text-[11px] text-gray-500">
-                  Select a worker to view its session log.
-                </p>
-              </div>
-            ) : (
-              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-3">
-                <div className="space-y-1.5">
-                  <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
-                    Log file
-                  </span>
-                  <CodeBlock>
-                    {`.orc/worktrees/${selectedId}/.orc/.orc-session.jsonl`}
-                  </CodeBlock>
-                </div>
-                <div className="space-y-1.5">
-                  <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
-                    Tail in real-time
-                  </span>
-                  <CodeBlock color="amber">
-                    {`tail -f .orc/worktrees/${selectedId}/.orc/.orc-session.jsonl`}
-                  </CodeBlock>
-                </div>
-              </div>
-            )}
-          </div>
+        {tab === 'diff' && detail && (
+          <TextPanel
+            label="Diff"
+            pathValue={detail.entityType === 'worker' ? detail.resolvedPaths.worktreePath : detail.resolvedPaths.winnerWorktreePath}
+            content={detail.diff.content}
+            emptyMessage={detail.diff.message ?? 'No diff available yet.'}
+          />
         )}
 
         {tab === 'preview' && !isLead && (
