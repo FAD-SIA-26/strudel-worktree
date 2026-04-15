@@ -17,9 +17,10 @@ describe('loadTemplate', () => {
       })),
     ).toEqual([
       { id: 'drums', dependsOn: [] },
-      { id: 'bass', dependsOn: [] },
+      { id: 'synth', dependsOn: [] },
       { id: 'chords', dependsOn: [] },
-      { id: 'melody', dependsOn: [] },
+      { id: 'lead', dependsOn: [] },
+      { id: 'arp', dependsOn: [] },
       { id: 'arrangement', dependsOn: [] },
     ])
   })

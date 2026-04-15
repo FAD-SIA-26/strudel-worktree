@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { generateRunPreviewUrl, generateStrudelPreviewUrl, launchPreview } from './preview'
+import { generateRunPreviewUrl, generateStrudelPreviewUrl, launchPreview, launchRunPreview } from './preview'
 import { createTestDb, getSQLite } from '../db/client'
 import { upsertTask, upsertWorktree } from '../db/queries'
 
@@ -109,5 +109,54 @@ describe('launchPreview contextual mode', () => {
     expect(decoded).toContain('const chords =')
     expect(decoded).toContain('stack(')
     expect(result.contextWinnerIds).toContain('r1-bass-v1')
+  })
+})
+
+describe('launchRunPreview', () => {
+  it('composes full track from all approved winners into a single self-contained Strudel snippet', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+    const runId = 'r1'
+
+    // drums winner
+    const drumsWt = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-drums-'))
+    await fs.mkdir(path.join(drumsWt, 'src'), { recursive: true })
+    await fs.writeFile(path.join(drumsWt, 'src/drums.js'), 'export const drums = s("bd hh sd hh")\n')
+    upsertTask(db, 'drums-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-drums-v1', 'worker', 'drums-lead', 'done')
+    upsertWorktree(db, 'r1-drums-v1', 'r1-drums-v1', drumsWt, 'feat/r1-drums-v1', 'main')
+    sqlite.prepare(`INSERT INTO merge_candidates(id,lead_id,proposed_winner_worker_id,selected_winner_worker_id,target_branch,reviewer_reasoning,selection_source) VALUES(?,?,?,?,?,?,?)`
+    ).run('drums-lead','drums-lead','r1-drums-v1','r1-drums-v1','lane/r1/drums','auto','proposal_accept')
+
+    // bass winner
+    const bassWt = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-bass-'))
+    await fs.mkdir(path.join(bassWt, 'src'), { recursive: true })
+    await fs.writeFile(path.join(bassWt, 'src/bass.js'), 'export const bass = note("c2 d2").s("sawtooth")\n')
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertWorktree(db, 'r1-bass-v1', 'r1-bass-v1', bassWt, 'feat/r1-bass-v1', 'main')
+    sqlite.prepare(`INSERT INTO merge_candidates(id,lead_id,proposed_winner_worker_id,selected_winner_worker_id,target_branch,reviewer_reasoning,selection_source) VALUES(?,?,?,?,?,?,?)`
+    ).run('bass-lead','bass-lead','r1-bass-v1','r1-bass-v1','lane/r1/bass','auto','proposal_accept')
+
+    // run worktree (needed by routes but not by launchRunPreview itself)
+    const runWt = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-run-'))
+
+    const result = await launchRunPreview(db, runId, runWt)
+
+    expect(result.previewUrl).toContain('https://strudel.cc/#')
+    const decoded = Buffer.from(result.previewUrl.split('#')[1] ?? '', 'base64').toString('utf8')
+    expect(decoded).toContain('const drums =')
+    expect(decoded).toContain('const bass =')
+    expect(decoded).toContain('stack(')
+    expect(decoded).not.toContain('import ')
+    expect(decoded).not.toContain('export const')
+  })
+
+  it('throws when no approved winners exist', async () => {
+    const db = createTestDb()
+    const runWt = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-run-'))
+    await expect(launchRunPreview(db, 'r1', runWt)).rejects.toThrow(
+      'final preview unavailable: no approved winners with source files'
+    )
   })
 })

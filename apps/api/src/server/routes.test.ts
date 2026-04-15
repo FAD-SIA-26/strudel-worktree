@@ -291,14 +291,25 @@ describe('routes', () => {
     })
   })
 
-  it('POST /api/preview/final launches preview from the run worktree', async () => {
+  it('POST /api/preview/final launches preview by composing all approved winners', async () => {
     const db = createTestDb()
-    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-route-preview-'))
-    await fs.mkdir(path.join(worktreePath, 'src'), { recursive: true })
-    await fs.writeFile(path.join(worktreePath, 'src/index.js'), 'stack(sound("bd"), sound("hh"))\n')
-    upsertWorktree(db, 'run-r1', 'run-r1', worktreePath, 'run/r1', 'main')
-    const app = createApp({ db, leadQueues: new Map() })
+    const sqlite = getSQLite(db)
 
+    // run worktree to anchor runId
+    const runWorktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-route-preview-'))
+    upsertWorktree(db, 'run-r1', 'run-r1', runWorktreePath, 'run/r1', 'main')
+
+    // drums winner with real source
+    const drumsWt = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-drums-'))
+    await fs.mkdir(path.join(drumsWt, 'src'), { recursive: true })
+    await fs.writeFile(path.join(drumsWt, 'src/drums.js'), 'export const drums = s("bd hh sd hh")\n')
+    upsertTask(db, 'drums-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-drums-v1', 'worker', 'drums-lead', 'done')
+    upsertWorktree(db, 'r1-drums-v1', 'r1-drums-v1', drumsWt, 'feat/r1-drums-v1', 'main')
+    sqlite.prepare(`INSERT INTO merge_candidates(id,lead_id,proposed_winner_worker_id,selected_winner_worker_id,target_branch,reviewer_reasoning,selection_source) VALUES(?,?,?,?,?,?,?)`
+    ).run('drums-lead','drums-lead','r1-drums-v1','r1-drums-v1','lane/r1/drums','auto','proposal_accept')
+
+    const app = createApp({ db, leadQueues: new Map() })
     const res = await request(app).post('/api/preview/final').send({})
 
     expect(res.status).toBe(202)
@@ -319,7 +330,7 @@ describe('routes', () => {
     expect(res.body).toEqual({ error: 'final preview unavailable' })
   })
 
-  it('POST /api/preview/final returns 409 when the run file is missing', async () => {
+  it('POST /api/preview/final returns 409 when no approved winners exist', async () => {
     const db = createTestDb()
     const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-route-preview-missing-'))
     upsertWorktree(db, 'run-r1', 'run-r1', worktreePath, 'run/r1', 'main')
@@ -328,7 +339,7 @@ describe('routes', () => {
     const res = await request(app).post('/api/preview/final').send({})
 
     expect(res.status).toBe(409)
-    expect(res.body).toEqual({ error: 'final preview unavailable: missing src/index.js' })
+    expect(res.body).toEqual({ error: 'final preview unavailable: no approved winners with source files' })
   })
 
   it('POST /api/preview/final reuses the persisted final preview artifact when present', async () => {
