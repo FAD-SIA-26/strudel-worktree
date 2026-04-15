@@ -3,6 +3,7 @@ import type { EntityDetail } from '@orc/types'
 import type { Db } from '../db/client'
 import { getAllTasks, getArtifactPath, getMergeCandidates, getWorktrees } from '../db/queries'
 import { getWorktreePatch } from '../git/worktree'
+import { resolveWorkerRuntime } from './workerRuntime'
 
 type ContentState = { status: 'ready' | 'empty' | 'missing' | 'error'; content: string | null; message?: string }
 
@@ -26,8 +27,8 @@ export async function getEntityDetail(db: Db, entityId: string): Promise<EntityD
   if (!task) return null
 
   if (task.type === 'worker') {
-    const worktree = getWorktrees(db).find(candidate => candidate.workerId === entityId)
-    if (!worktree) {
+    const workerRuntime = resolveWorkerRuntime(db, entityId)
+    if (!workerRuntime) {
       return {
         entityId,
         entityType: 'worker',
@@ -50,33 +51,48 @@ export async function getEntityDetail(db: Db, entityId: string): Promise<EntityD
       }
     }
 
-    const planPath = getArtifactPath(db, entityId, 'worker_plan') ?? `${worktree.path}/.orc/worker-plan.md`
-    const logPath = getArtifactPath(db, entityId, 'session_log') ?? `${worktree.path}/.orc/.orc-session.jsonl`
-    const plan = await readText(planPath)
-    const patch = await getWorktreePatch(worktree.path, worktree.baseBranch)
+    const plan = await readText(workerRuntime.planPath)
+    const patch = workerRuntime.inferred
+      ? ''
+      : await getWorktreePatch(workerRuntime.worktreePath, workerRuntime.baseBranch)
+    const missingPlanMessage = task.state === 'queued'
+      ? 'worker is queued; plan file will be created when a slot opens'
+      : 'worker plan is not available yet'
 
     return {
       entityId,
       entityType: 'worker',
       title: entityId,
       resolvedPaths: {
-        worktreePath: worktree.path,
-        planPath,
-        logPath,
+        worktreePath: workerRuntime.worktreePath,
+        planPath: workerRuntime.planPath,
+        logPath: workerRuntime.logPath,
       },
-      plan,
+      plan: workerRuntime.inferred && plan.status === 'missing'
+        ? { ...plan, message: missingPlanMessage }
+        : plan,
       diff: patch
         ? {
             status: 'ready',
             content: patch,
-            branch: worktree.branch,
-            baseBranch: worktree.baseBranch,
+            branch: workerRuntime.branch,
+            baseBranch: workerRuntime.baseBranch,
           }
-        : {
+        : workerRuntime.inferred
+          ? {
+              status: 'missing',
+              content: null,
+              branch: workerRuntime.branch,
+              baseBranch: workerRuntime.baseBranch,
+              message: task.state === 'queued'
+                ? 'worker is queued; worktree will be created when a slot opens'
+                : 'worker worktree has not been created yet',
+            }
+          : {
             status: 'empty',
             content: '',
-            branch: worktree.branch,
-            baseBranch: worktree.baseBranch,
+            branch: workerRuntime.branch,
+            baseBranch: workerRuntime.baseBranch,
             message: 'no diff yet',
           },
     }

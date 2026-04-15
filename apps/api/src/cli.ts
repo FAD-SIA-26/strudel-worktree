@@ -170,19 +170,19 @@ program
                   id: "chords",
                   goal: "Write chord pattern in Strudel.js",
                   numWorkers: 2,
-                  dependsOn: ["bass"],
+                  dependsOn: [],
                 },
                 {
                   id: "melody",
                   goal: "Write lead melody in Strudel.js",
                   numWorkers: 3,
-                  dependsOn: ["chords"],
+                  dependsOn: [],
                 },
                 {
                   id: "arrangement",
                   goal: "Write final Strudel.js arrangement",
                   numWorkers: 1,
-                  dependsOn: ["drums", "bass", "chords", "melody"],
+                  dependsOn: [],
                 },
               ]);
             }

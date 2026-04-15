@@ -31,7 +31,7 @@ Do NOT touch any other file.
 [[sections]]
 id = "chords"
 label = "Harmony / Chords"
-depends_on = ["bass"]
+depends_on = []
 workers = 2
 prompt_hint = """
 Write a Strudel.js chord pattern. Output to src/chords.js ONLY.
@@ -43,7 +43,7 @@ Do NOT touch any other file.
 [[sections]]
 id = "melody"
 label = "Lead Melody"
-depends_on = ["chords"]
+depends_on = []
 workers = 3
 prompt_hint = """
 Write a Strudel.js lead melody. Output to src/melody.js ONLY.
@@ -55,7 +55,7 @@ Do NOT touch any other file.
 [[sections]]
 id = "arrangement"
 label = "Final Arrangement"
-depends_on = ["drums", "bass", "chords", "melody"]
+depends_on = []
 workers = 1
 prompt_hint = """
 Write src/index.js that imports and stacks all instruments.

@@ -77,6 +77,61 @@ describe('routes', () => {
     })
   })
 
+  it('GET /api/orchestration scopes workers and previews to the latest run', async () => {
+    const db = createTestDb()
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertTask(db, 'r2-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+    upsertWorktree(db, 'r1-bass-v1', 'r1-bass-v1', '/tmp/r1-bass-v1', 'feat/r1-bass-v1', 'main')
+    upsertWorktree(db, 'run-r2', 'run-r2', '/tmp/run-r2', 'run/r2', 'main')
+    upsertWorktree(db, 'r2-bass-v1', 'r2-bass-v1', '/tmp/r2-bass-v1', 'feat/r2-bass-v1', 'main')
+
+    const sqlite = getSQLite(db)
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('bass-lead', 'bass-lead', 'r2-bass-v1', null, 'lane/r2/bass', 'seed proposal', 'proposal_accept')
+    sqlite.prepare(`
+      INSERT INTO previews(worker_id, mode, preview_url, generated_code, source_files, context_winner_ids, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('r1-bass-v1', 'solo', 'https://example.test/r1-solo', 'const bass = sound("bd")\nstack(bass)\n', '["src/bass.js"]', '[]', Date.now())
+    sqlite.prepare(`
+      INSERT INTO previews(worker_id, mode, preview_url, generated_code, source_files, context_winner_ids, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('r2-bass-v1', 'solo', 'https://example.test/r2-solo', 'const bass = sound("bd")\nstack(bass)\n', '["src/bass.js"]', '[]', Date.now())
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      runId: 'r2',
+      sections: [
+        {
+          id: 'bass',
+          proposedWinnerWorkerId: 'r2-bass-v1',
+          workers: [
+            {
+              id: 'r2-bass-v1',
+              previewArtifacts: [
+                { mode: 'solo', previewUrl: 'https://example.test/r2-solo' },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+    expect(res.body.sections[0].workers).toHaveLength(1)
+  })
+
   it('GET / redirects to the dashboard when configured', async () => {
     const db = createTestDb()
     const app = createApp({
@@ -547,6 +602,42 @@ describe('routes', () => {
     expect(String(res.body.diff.content)).toContain('diff --git')
   })
 
+  it('GET /api/entities/:entityId/detail predicts queued worker paths before the worktree exists', async () => {
+    repoDir = initTestRepo('queued-worker-detail-route')
+    const db = createTestDb()
+    const runWtPath = path.join(repoDir, '.orc', 'worktrees', 'run-r9')
+
+    await createWorktree(repoDir, runWtPath, 'run/r9')
+
+    upsertTask(db, 'chords-lead', 'lead', 'mastermind', 'running')
+    upsertTask(db, 'r9-chords-v1', 'worker', 'chords-lead', 'queued')
+    upsertWorktree(db, 'run-r9', 'run-r9', runWtPath, 'run/r9', 'main')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/entities/r9-chords-v1/detail')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({
+      entityId: 'r9-chords-v1',
+      entityType: 'worker',
+      resolvedPaths: {
+        worktreePath: path.join(repoDir, '.orc', 'worktrees', 'r9-chords-v1'),
+        planPath: path.join(repoDir, '.orc', 'worktrees', 'r9-chords-v1', '.orc', 'worker-plan.md'),
+        logPath: path.join(repoDir, '.orc', 'worktrees', 'r9-chords-v1', '.orc', '.orc-session.jsonl'),
+      },
+      plan: {
+        status: 'missing',
+      },
+      diff: {
+        status: 'missing',
+        branch: 'feat/r9-chords-v1',
+        baseBranch: 'main',
+      },
+    })
+    expect(res.body.plan.message).toMatch(/queued|does not exist yet/i)
+    expect(res.body.diff.message).toMatch(/queued|not been created yet/i)
+  })
+
   it('GET /api/entities/:entityId/detail returns the selected winner diff for a lead', async () => {
     repoDir = initTestRepo('lead-detail-route')
     const db = createTestDb()
@@ -598,6 +689,27 @@ describe('routes', () => {
       },
     })
     expect(String(res.body.diff.content)).toContain('diff --git')
+  })
+
+  it('GET /api/entities/:entityId/logs returns an empty payload for queued workers before worktree creation', async () => {
+    repoDir = initTestRepo('queued-worker-logs-route')
+    const db = createTestDb()
+    const runWtPath = path.join(repoDir, '.orc', 'worktrees', 'run-r10')
+
+    await createWorktree(repoDir, runWtPath, 'run/r10')
+
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'running')
+    upsertTask(db, 'r10-melody-v2', 'worker', 'melody-lead', 'queued')
+    upsertWorktree(db, 'run-r10', 'run-r10', runWtPath, 'run/r10', 'main')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/entities/r10-melody-v2/logs')
+
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({
+      entries: [],
+      tailCursor: null,
+    })
   })
 
   it('GET /api/entities/:entityId/logs returns the latest worker log window oldest-first', async () => {

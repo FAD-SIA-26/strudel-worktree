@@ -7,11 +7,20 @@ import { launchPreview, launchRunPreview, stopPreview } from '../orchestrator/pr
 import type { AppDeps } from './app'
 import { getEntityDetail } from './entityDetails'
 import { readLeadLogWindow, readWorkerLogWindow, streamLeadLogs, streamWorkerLogs } from './entityLogs'
+import { resolveWorkerRuntime } from './workerRuntime'
 
 function parseLimit(value: unknown): number {
   const numeric = Number(value ?? 500)
   if (!Number.isFinite(numeric) || numeric <= 0) return 500
   return Math.min(1000, Math.floor(numeric))
+}
+
+function workerBelongsToRun(workerId: string, runId: string): boolean {
+  return workerId.startsWith(`${runId}-`)
+}
+
+function isInActiveRun(workerId: string, runId: string): boolean {
+  return runId === 'current' || workerBelongsToRun(workerId, runId)
 }
 
 export function createRoutes({ db, leadQueues }: AppDeps): Router {
@@ -28,9 +37,18 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     const runId = runWorktree?.branch?.replace('run/', '') ?? 'current'
     const finalPreview = previews.find(p => p.workerId === `run:${runId}:final` && p.mode === 'solo')
     const mergeCandidateByLead = new Map(mergeCandidates.map(candidate => [candidate.leadId, candidate]))
-    const worktreeByWorker = new Map(worktrees.map(worktree => [worktree.workerId, worktree]))
+    const scopedWorkerIds = new Set(
+      tasks
+        .filter(task => task.type === 'worker' && isInActiveRun(task.id, runId))
+        .map(task => task.id),
+    )
+    const worktreeByWorker = new Map(
+      worktrees
+        .filter(worktree => scopedWorkerIds.has(worktree.workerId))
+        .map(worktree => [worktree.workerId, worktree]),
+    )
     const previewsByWorker = new Map<string, Array<{ mode: 'solo' | 'contextual'; previewUrl: string }>>()
-    for (const preview of previews) {
+    for (const preview of previews.filter(preview => scopedWorkerIds.has(preview.workerId))) {
       const entries = previewsByWorker.get(preview.workerId) ?? []
       entries.push({ mode: preview.mode, previewUrl: preview.previewUrl })
       previewsByWorker.set(preview.workerId, entries)
@@ -54,7 +72,11 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
           : selectedWinnerWorkerId ? 'selected'
           : 'waiting_for_review',
         awaitingUserApproval: lead.state === 'awaiting_user_approval',
-        workers: tasks.filter(t => t.type === 'worker' && t.parentId === lead.id).map(worker => {
+        workers: tasks.filter(
+          task => task.type === 'worker'
+            && task.parentId === lead.id
+            && isInActiveRun(task.id, runId),
+        ).map(worker => {
           const wt = worktreeByWorker.get(worker.id)
           const previewArtifacts = previewsByWorker.get(worker.id) ?? []
           const awaitingUserApproval = lead.state === 'awaiting_user_approval'
@@ -121,13 +143,12 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     }
 
     if (task.type === 'worker') {
-      const worktree = getWorktrees(db).find(candidate => candidate.workerId === entityId)
-      if (!worktree) {
+      const workerRuntime = resolveWorkerRuntime(db, entityId)
+      if (!workerRuntime) {
         res.status(404).json({ error: `worktree not found for ${entityId}` })
         return
       }
-      const logPath = getArtifactPath(db, entityId, 'session_log') ?? `${worktree.path}/.orc/.orc-session.jsonl`
-      res.json(await readWorkerLogWindow(entityId, logPath, limit))
+      res.json(await readWorkerLogWindow(entityId, workerRuntime.logPath, limit))
       return
     }
 
@@ -154,14 +175,13 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
       const afterEventId = afterValue.startsWith('event:') ? Number(afterValue.slice(6)) : 0
       cleanup = streamLeadLogs(db, res, entityId, Number.isFinite(afterEventId) ? afterEventId : 0)
     } else if (task.type === 'worker') {
-      const worktree = getWorktrees(db).find(candidate => candidate.workerId === entityId)
-      if (!worktree) {
+      const workerRuntime = resolveWorkerRuntime(db, entityId)
+      if (!workerRuntime) {
         res.end()
         return
       }
-      const logPath = getArtifactPath(db, entityId, 'session_log') ?? `${worktree.path}/.orc/.orc-session.jsonl`
       const afterLine = afterValue.startsWith('line:') ? Number(afterValue.slice(5)) : 0
-      cleanup = streamWorkerLogs(res, entityId, logPath, Number.isFinite(afterLine) ? afterLine : 0)
+      cleanup = streamWorkerLogs(res, entityId, workerRuntime.logPath, Number.isFinite(afterLine) ? afterLine : 0)
     }
 
     req.on('close', () => {
