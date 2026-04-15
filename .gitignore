@@ -7,3 +7,4 @@ dist/
 *.db-journal
 .env
 .env.local
+.worktrees/
