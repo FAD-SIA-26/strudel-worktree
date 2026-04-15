@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { SectionInfo, WorkerInfo } from '@orc/types'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
@@ -18,6 +19,7 @@ function CodeBlock({ children, color = 'blue' }: { children: string; color?: 'bl
   const palette = color === 'amber'
     ? 'text-amber-300/80 bg-amber-500/5 border-amber-500/15'
     : 'text-blue-300 bg-blue-500/5 border-blue-500/15'
+
   return (
     <code className={`block text-[11px] font-mono rounded px-3 py-2 border break-all leading-relaxed ${palette}`}>
       {children}
@@ -25,10 +27,15 @@ function CodeBlock({ children, color = 'blue' }: { children: string; color?: 'bl
   )
 }
 
+function previewFor(worker: WorkerInfo, mode: 'solo' | 'contextual') {
+  return worker.previewArtifacts.find(p => p.mode === mode)
+}
+
 export function DetailPanel({ selectedId, sections }: {
   selectedId: string | null
   sections: SectionInfo[]
 }) {
+  const qc = useQueryClient()
   const isLead = selectedId?.endsWith('-lead') ?? false
   const [tab, setTab] = useState<'compare' | 'plan' | 'logs' | 'preview'>(
     isLead ? 'compare' : 'plan'
@@ -56,36 +63,49 @@ export function DetailPanel({ selectedId, sections }: {
 
   const sectionId = selectedId.replace('-lead', '')
   const section = sections.find(s => s.id === sectionId)
-  const worker: WorkerInfo | undefined = sections.flatMap(s => s.workers).find(w => w.id === selectedId)
+  const worker = sections.flatMap(s => s.workers).find(w => w.id === selectedId)
   const workerCfg = worker ? (WORKER_STATE_CFG[worker.state] ?? WORKER_STATE_CFG.queued) : null
+  const headerSoloPreview = worker ? previewFor(worker, 'solo') : null
 
-  async function approve() {
-    if (!worker) return
-    const leadId = sections.find(s => s.workers.some(w => w.id === worker.id))?.id + '-lead'
-    await fetch(`${API}/api/approve`, {
+  async function approveWorker(workerId: string, leadId: string) {
+    const res = await fetch(`${API}/api/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: worker.id, leadId }),
+      body: JSON.stringify({ workerId, leadId }),
     })
+    if (res.ok) {
+      await qc.invalidateQueries({ queryKey: ['orchestration'] })
+    }
   }
 
   async function drop() {
     const leadId = isLead
       ? selectedId
-      : (sections.find(s => s.workers.some(w => w.id === selectedId))?.id + '-lead')
+      : `${sections.find(s => s.workers.some(w => w.id === selectedId))?.id}-lead`
     await fetch(`${API}/api/drop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workerId: selectedId, leadId }),
     })
+    await qc.invalidateQueries({ queryKey: ['orchestration'] })
   }
 
-  async function launchPreview(workerId: string) {
-    await fetch(`${API}/api/preview/launch`, {
+  async function launchPreview(workerId: string, mode: 'solo' | 'contextual') {
+    const previewTab = window.open('about:blank', '_blank', 'noopener,noreferrer')
+    const res = await fetch(`${API}/api/preview/launch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ worktreeId: workerId }),
+      body: JSON.stringify({ workerId, mode }),
     })
+    if (!res.ok) {
+      previewTab?.close()
+      return null
+    }
+
+    const artifact = await res.json() as { previewUrl: string }
+    previewTab?.location.assign(artifact.previewUrl)
+    await qc.invalidateQueries({ queryKey: ['orchestration'] })
+    return artifact
   }
 
   const tabs = isLead
@@ -101,7 +121,6 @@ export function DetailPanel({ selectedId, sections }: {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Panel header */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#1c2738] bg-[#0b0e14] flex-shrink-0 min-w-0">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border flex-shrink-0 ${
@@ -115,16 +134,15 @@ export function DetailPanel({ selectedId, sections }: {
           {workerCfg && (
             <div className="flex items-center gap-1 flex-shrink-0">
               <span className={`w-1.5 h-1.5 rounded-full ${workerCfg.dot}`} />
-              <span className={`text-[10px] ${workerCfg.text}`}>{worker!.state}</span>
+              <span className={`text-[10px] ${workerCfg.text}`}>{worker?.state}</span>
             </div>
           )}
         </div>
 
-        {/* Action buttons */}
         <div className="flex gap-1.5 flex-shrink-0">
           {worker?.state === 'done' && (
             <button
-              onClick={approve}
+              onClick={() => approveWorker(worker.id, `${sectionId}-lead`)}
               className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
             >
               ✓ Approve
@@ -136,9 +154,9 @@ export function DetailPanel({ selectedId, sections }: {
           >
             ✕ Drop
           </button>
-          {worker?.previewUrl ? (
+          {headerSoloPreview ? (
             <a
-              href={worker.previewUrl}
+              href={headerSoloPreview.previewUrl}
               target="_blank"
               rel="noreferrer"
               className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25 transition-colors"
@@ -147,7 +165,7 @@ export function DetailPanel({ selectedId, sections }: {
             </a>
           ) : worker ? (
             <button
-              onClick={() => launchPreview(worker.id)}
+              onClick={() => launchPreview(worker.id, 'solo')}
               className="text-[11px] bg-[#111825] hover:bg-[#192030] text-blue-400 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
             >
               ▶ Launch
@@ -156,16 +174,13 @@ export function DetailPanel({ selectedId, sections }: {
         </div>
       </div>
 
-      {/* Tab bar */}
       <div className="flex border-b border-[#1c2738] bg-[#0b0e14] flex-shrink-0 px-2 gap-0.5">
         {tabs.map(t => (
           <button
             key={t}
-            onClick={() => setTab(t as any)}
+            onClick={() => setTab(t as typeof tab)}
             className={`relative px-3 py-2 text-[11px] font-medium transition-colors ${
-              tab === t
-                ? 'text-blue-400'
-                : 'text-gray-600 hover:text-gray-400'
+              tab === t ? 'text-blue-400' : 'text-gray-600 hover:text-gray-400'
             }`}
           >
             {TAB_LABEL[t]}
@@ -176,60 +191,97 @@ export function DetailPanel({ selectedId, sections }: {
         ))}
       </div>
 
-      {/* Tab content */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-5">
-
-        {/* Compare tab (leads only) */}
         {tab === 'compare' && isLead && section && (
           <div className="max-w-2xl space-y-2">
             <p className="text-[11px] text-gray-600 mb-4">
-              Review each worker's output. Launch a preview to compare, then pick the winner.
+              Review each worker&apos;s output. Launch a preview to compare, then pick the winner.
             </p>
             {section.workers.map(w => {
               const cfg = WORKER_STATE_CFG[w.state] ?? WORKER_STATE_CFG.queued
               const isDone = w.state === 'done'
+              const soloPreview = previewFor(w, 'solo')
+              const contextualPreview = previewFor(w, 'contextual')
+
               return (
                 <div
                   key={w.id}
                   className={`flex items-center gap-3 p-3.5 rounded-lg border transition-colors ${
-                    isDone
-                      ? 'border-emerald-500/25 bg-emerald-500/5'
-                      : 'border-[#1c2738] bg-[#0f1420] opacity-60'
+                    w.selected
+                      ? 'border-emerald-400 bg-emerald-500/10 ring-1 ring-emerald-400/30'
+                      : isDone
+                        ? 'border-emerald-500/25 bg-emerald-500/5'
+                        : 'border-[#1c2738] bg-[#0f1420] opacity-60'
                   }`}
                 >
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="font-mono text-[11px] text-gray-200 truncate">{w.id}</div>
+                    <div className="font-mono text-[11px] text-gray-200 truncate flex items-center gap-2">
+                      <span className="truncate">{w.id}</span>
+                      {w.selected && (
+                        <span className="text-[10px] text-emerald-300 border border-emerald-400/30 rounded px-2 py-0.5">
+                          WINNER
+                        </span>
+                      )}
+                    </div>
                     <div className={`text-[10px] mt-0.5 ${cfg.text}`}>{w.state}</div>
                   </div>
                   {isDone && (
-                    <div className="flex gap-1.5 flex-shrink-0">
-                      {w.previewUrl ? (
+                    <div className="flex gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                      {soloPreview ? (
                         <a
-                          href={w.previewUrl}
+                          href={soloPreview.previewUrl}
                           target="_blank"
                           rel="noreferrer"
                           className="text-[11px] bg-violet-500/12 hover:bg-violet-500/22 text-violet-400 px-2.5 py-1 rounded border border-violet-500/25 transition-colors"
                         >
-                          ↗ Listen
+                          ↗ Solo
                         </a>
                       ) : (
                         <button
-                          onClick={() => launchPreview(w.id)}
+                          onClick={() => launchPreview(w.id, 'solo')}
                           className="text-[11px] bg-violet-500/8 hover:bg-violet-500/18 text-violet-400 px-2.5 py-1 rounded border border-violet-500/20 transition-colors"
                         >
-                          ▶ Launch
+                          ▶ Launch solo
+                        </button>
+                      )}
+                      {contextualPreview ? (
+                        <a
+                          href={contextualPreview.previewUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25 transition-colors"
+                        >
+                          ↗ Context
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => launchPreview(w.id, 'contextual')}
+                          className="text-[11px] bg-blue-500/8 hover:bg-blue-500/18 text-blue-400 px-2.5 py-1 rounded border border-blue-500/20 transition-colors disabled:opacity-40"
+                          disabled={!w.contextAvailable}
+                        >
+                          ▶ Launch with context
                         </button>
                       )}
                       <button
-                        onClick={() => fetch(`${API}/api/approve`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ workerId: w.id, leadId: `${sectionId}-lead` }),
-                        })}
+                        onClick={() => launchPreview(w.id, 'solo')}
+                        className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
+                      >
+                        ↻ Refresh solo
+                      </button>
+                      {contextualPreview && (
+                        <button
+                          onClick={() => launchPreview(w.id, 'contextual')}
+                          className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
+                        >
+                          ↻ Refresh context
+                        </button>
+                      )}
+                      <button
+                        onClick={() => approveWorker(w.id, `${sectionId}-lead`)}
                         className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
                       >
-                        ✓ Pick
+                        ✓ Pick winner
                       </button>
                     </div>
                   )}
@@ -244,7 +296,6 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
 
-        {/* Plan tab */}
         {tab === 'plan' && (
           <div className="max-w-xl space-y-3">
             <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-3">
@@ -254,7 +305,7 @@ export function DetailPanel({ selectedId, sections }: {
               <CodeBlock>
                 {isLead
                   ? `.orc/runs/current/leads/${sectionId}.md`
-                  : `.worktrees/${selectedId}/.orc/worker-plan.md`}
+                  : `.orc/worktrees/${selectedId}/.orc/worker-plan.md`}
               </CodeBlock>
               <p className="text-[11px] text-gray-600">
                 Markdown file — open in your editor to view.
@@ -263,7 +314,6 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
 
-        {/* Logs tab */}
         {tab === 'logs' && (
           <div className="max-w-xl space-y-3">
             {isLead ? (
@@ -279,7 +329,7 @@ export function DetailPanel({ selectedId, sections }: {
                     Log file
                   </span>
                   <CodeBlock>
-                    {`.worktrees/${selectedId}/.orc/.orc-session.jsonl`}
+                    {`.orc/worktrees/${selectedId}/.orc/.orc-session.jsonl`}
                   </CodeBlock>
                 </div>
                 <div className="space-y-1.5">
@@ -287,7 +337,7 @@ export function DetailPanel({ selectedId, sections }: {
                     Tail in real-time
                   </span>
                   <CodeBlock color="amber">
-                    {`tail -f .worktrees/${selectedId}/.orc/.orc-session.jsonl`}
+                    {`tail -f .orc/worktrees/${selectedId}/.orc/.orc-session.jsonl`}
                   </CodeBlock>
                 </div>
               </div>
@@ -295,31 +345,35 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
 
-        {/* Preview tab */}
         {tab === 'preview' && !isLead && (
           <div className="max-w-xl space-y-3">
-            {worker?.previewUrl ? (
+            {headerSoloPreview ? (
               <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-2">
                 <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.12em]">
                   Preview URL
                 </span>
                 <a
-                  href={worker.previewUrl}
+                  href={headerSoloPreview.previewUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="block text-[11px] font-mono text-blue-400 hover:text-blue-300 bg-blue-500/5 border border-blue-500/15 rounded px-3 py-2 break-all transition-colors"
                 >
-                  {worker.previewUrl}
+                  {headerSoloPreview.previewUrl}
                 </a>
               </div>
-            ) : (
-              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4">
+            ) : worker ? (
+              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-3">
                 <p className="text-[11px] text-gray-600">
-                  No preview available yet.{' '}
-                  <span className="text-blue-400">▶ Launch</span> to start one.
+                  No preview available yet. <span className="text-blue-400">▶ Launch</span> to start one.
                 </p>
+                <button
+                  onClick={() => launchPreview(worker.id, 'solo')}
+                  className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-3 py-2 rounded border border-blue-500/25 transition-colors"
+                >
+                  ▶ Launch Solo Preview
+                </button>
               </div>
-            )}
+            ) : null}
           </div>
         )}
       </div>

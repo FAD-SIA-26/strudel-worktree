@@ -1,5 +1,5 @@
 import * as path from 'node:path'
-import type { Db } from '../db/client'
+import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import { upsertTask } from '../db/queries'
 import { createLeadPlan } from '../git/planFiles'
@@ -93,22 +93,24 @@ export class LeadStateMachine {
     )
 
     let forceWinnerId: string | undefined
-    const drainCommands = () => {
+    const drainCommandsOnce = async (): Promise<void> => {
       while (this.cfg.commandQueue.size > 0) {
-        this.cfg.commandQueue.dequeue().then(cmd => {
-          if (cmd.commandType === 'ForceApprove') { forceWinnerId = cmd.winnerId }
-          else if (cmd.commandType === 'Abort') {
-            const w = workers.find(x => x.id === cmd.targetWorkerId)
-            if (w) w.abort()
-          }
-        })
+        const cmd = await this.cfg.commandQueue.dequeue()
+        if (cmd.commandType === 'ForceApprove') {
+          forceWinnerId = cmd.winnerId
+        } else if (cmd.commandType === 'Abort') {
+          const w = workers.find(x => x.id === cmd.targetWorkerId)
+          if (w) await w.abort()
+        }
       }
     }
-    const commandPollInterval = setInterval(drainCommands, 500)
+    const commandPollInterval = setInterval(() => {
+      void drainCommandsOnce()
+    }, 500)
 
     const results = await Promise.allSettled(workerPromises)
     clearInterval(commandPollInterval)
-    drainCommands()
+    await drainCommandsOnce()
 
     const done = results
       .map((r, i) => ({ r, id: workers[i].id, branch: workers[i].branch }))
@@ -137,6 +139,26 @@ export class LeadStateMachine {
     }
 
     const winner = done.find(d => d.workerId === winnerId) ?? done[0]
+    await Promise.all(
+      workers
+        .filter(w => w.id !== winner.workerId)
+        .map(w => w.abort().catch(() => undefined))
+    )
+    getSQLite(this.cfg.db).prepare(`
+      INSERT INTO merge_candidates(id, lead_id, winner_worker_id, target_branch, reviewer_reasoning, selection_source)
+      VALUES(?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        winner_worker_id=excluded.winner_worker_id,
+        reviewer_reasoning=excluded.reviewer_reasoning,
+        selection_source=excluded.selection_source
+    `).run(
+      this.cfg.id,
+      this.cfg.id,
+      winner.workerId,
+      this.cfg.runBranch,
+      reasoning,
+      forceWinnerId ? 'user' : 'reviewer',
+    )
     this.emit('ReviewComplete', { winnerId: winner.workerId, reasoning })
     this.emit('MergeRequested', { leadId: this.cfg.id, worktreeId: winner.workerId, targetBranch: this.cfg.runBranch })
     this.state = 'done'

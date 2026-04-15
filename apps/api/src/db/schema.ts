@@ -54,6 +54,7 @@ export const mergeCandidates = sqliteTable('merge_candidates', {
   winnerWorkerId:    text('winner_worker_id').notNull(),
   targetBranch:      text('target_branch').notNull(),
   reviewerReasoning: text('reviewer_reasoning'),
+  selectionSource:   text('selection_source').notNull().default('reviewer'),
 })
 
 export const mergeQueue = sqliteTable('merge_queue', {
@@ -70,12 +71,16 @@ export const mergeQueue = sqliteTable('merge_queue', {
 })
 
 export const previews = sqliteTable('previews', {
-  id:         text('id').primaryKey(),
-  worktreeId: text('worktree_id').notNull(),
-  previewUrl: text('preview_url').notNull(),
-  status:     text('status').notNull().default('inactive'),
-  launchedAt: integer('launched_at'),
-})
+  workerId:         text('worker_id').notNull(),
+  mode:             text('mode').notNull(),
+  previewUrl:       text('preview_url').notNull(),
+  generatedCode:    text('generated_code').notNull(),
+  sourceFiles:      text('source_files').notNull().default('[]'),
+  contextWinnerIds: text('context_winner_ids').notNull().default('[]'),
+  generatedAt:      integer('generated_at').notNull(),
+}, t => ({
+  workerModeUniq: uniqueIndex('preview_worker_mode_uniq').on(t.workerId, t.mode),
+}))
 
 export const artifacts = sqliteTable('artifacts', {
   id:           integer('id').primaryKey({ autoIncrement: true }),

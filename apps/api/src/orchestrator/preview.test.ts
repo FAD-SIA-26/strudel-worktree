@@ -11,9 +11,13 @@ describe('generateStrudelPreviewUrl', () => {
     await fs.writeFile(path.join(worktreePath, 'src', 'drums.js'), 'export const drums = sound("bd")\n')
 
     const previewUrl = await generateStrudelPreviewUrl(worktreePath, 'run-123-drums-v2')
+    const decoded = Buffer.from(previewUrl.split('#')[1] ?? '', 'base64').toString('utf8')
 
     expect(previewUrl).toContain('https://strudel.cc/#')
-    expect(Buffer.from(previewUrl.split('#')[1] ?? '', 'base64').toString('utf8')).toContain('export const drums')
+    expect(decoded).toContain('const drums = sound("bd")')
+    expect(decoded).toContain('stack(drums)')
+    expect(decoded).not.toContain('export const')
+    expect(decoded).not.toContain('import ')
   })
 
   it('falls back to src/index.js when it exists', async () => {

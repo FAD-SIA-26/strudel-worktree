@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
-import type { Db } from '../db/client'
+import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import { upsertTask } from '../db/queries'
 import { createRunPlan } from '../git/planFiles'
@@ -83,6 +83,16 @@ export class MastermindStateMachine {
     const runPlanPath = await createRunPlan(this.cfg.repoRoot, this.cfg.runId, {
       userGoal: opts.userGoal, sections: sections.map(s => s.id),
     }).catch(() => '')
+
+    const sqlite = getSQLite(this.cfg.db)
+    for (const section of sections) {
+      for (const dep of section.dependsOn) {
+        sqlite.prepare(`
+          INSERT INTO task_edges(parent_id, child_id, edge_type)
+          VALUES(?, ?, ?)
+        `).run(`${dep}-lead`, `${section.id}-lead`, 'depends_on')
+      }
+    }
 
     const runBranch = `run/${this.cfg.runId}`
     // Create the run branch without switching the main working tree

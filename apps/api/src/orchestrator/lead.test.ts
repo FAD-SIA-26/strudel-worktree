@@ -52,4 +52,54 @@ describe('LeadStateMachine', () => {
     expect(leadPlan).not.toContain('(variation 1)')
     expect(leadPlan).not.toContain('(variation 2)')
   }, 30_000)
+
+  it('force-approves a done winner and aborts running siblings', async () => {
+    repoDir = initTestRepo('lead-force-approve-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const aborted: string[] = []
+
+    class RecordingAgent extends MockAgent {
+      constructor(private readonly workerId: string) {
+        super({ delayMs: 5, outcome: 'done' })
+      }
+
+      override async abort(): Promise<void> {
+        aborted.push(this.workerId)
+        await super.abort()
+      }
+    }
+
+    const q = new CommandQueue<any>()
+    q.enqueue({ commandType: 'ForceApprove', winnerId: 'run1-main-v1' })
+
+    let nextIndex = 0
+    const lead = new LeadStateMachine({
+      id: 'main-lead',
+      sectionId: 'main',
+      sectionGoal: 'build main section',
+      numWorkers: 2,
+      baseBranch: 'main',
+      runBranch: 'run/run1',
+      runId: 'run1',
+      repoRoot: repoDir,
+      db,
+      governor: gov,
+      commandQueue: q,
+      agentFactory: () => {
+        nextIndex += 1
+        return new RecordingAgent(`run1-main-v${nextIndex}`)
+      },
+      llmCall: async p => {
+        if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
+        return JSON.stringify({ winnerId: 'run1-main-v2', reasoning: 'reviewer would have picked v2' })
+      },
+    })
+
+    const result = await lead.run()
+    expect(result.status).toBe('done')
+    expect(result.winnerBranch).toBe('feat/run1-main-v1')
+    expect(result.reasoning).toBe('force-approved by user')
+    expect(aborted).toContain('run1-main-v2')
+  })
 })

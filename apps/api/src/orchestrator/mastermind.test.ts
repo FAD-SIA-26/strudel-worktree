@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import * as fs from 'node:fs/promises'
 import { initTestRepo, cleanupTestRepo } from '../test-helpers/initTestRepo'
-import { createTestDb } from '../db/client'
+import { createTestDb, getSQLite } from '../db/client'
 import { ConcurrencyGovernor } from './concurrency'
 import { MockAgent } from '../agents/mock'
 import { MastermindStateMachine } from './mastermind'
@@ -64,5 +64,38 @@ describe('MastermindStateMachine', () => {
     const result = await m.run({ userGoal: 'Build landing page' })
     expect(result.status).toBe('done')
     expect(seenBaseRefs).toEqual(['trunk'])
+  }, 30_000)
+
+  it('persists section dependency edges for downstream contextual previews', async () => {
+    repoDir = initTestRepo('mastermind-deps-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+
+    const m = new MastermindStateMachine({
+      repoRoot: repoDir, db, governor: gov, runId: 'r3', baseBranch: 'main',
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
+      llmCall: async p => {
+        if (p.includes('Decompose')) {
+          return JSON.stringify([
+            { id: 'chords', goal: 'Write chords', numWorkers: 1, dependsOn: [] },
+            { id: 'melody', goal: 'Write melody', numWorkers: 1, dependsOn: ['chords'] },
+          ])
+        }
+        if (p.includes('Generate')) return JSON.stringify(['only variation'])
+        return JSON.stringify({ winnerId: 'r3-chords-v1', reasoning: 'only worker' })
+      },
+    })
+
+    await m.run({ userGoal: 'Build a dependent track' })
+
+    const edges = getSQLite(db)
+      .prepare(`SELECT parent_id AS parentId, child_id AS childId, edge_type AS edgeType FROM task_edges`)
+      .all() as Array<{ parentId: string; childId: string; edgeType: string }>
+
+    expect(edges).toContainEqual({
+      parentId: 'chords-lead',
+      childId: 'melody-lead',
+      edgeType: 'depends_on',
+    })
   }, 30_000)
 })

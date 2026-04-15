@@ -25,6 +25,7 @@ import {
 } from './git/worktree'
 import { ensureDashboardServer } from './runtime/dashboard'
 import { getOrcAppRoots, getOrcPaths } from './runtime/paths'
+import { findAvailablePort } from './runtime/ports'
 
 function resolveRepoRoot(): string {
   if (process.env.ORC_REPO_ROOT) return process.env.ORC_REPO_ROOT
@@ -99,8 +100,9 @@ program
     seedSeqsFromDb(db)   // prevent UNIQUE violations if DB already has sequences from a prior run
     const gov    = new ConcurrencyGovernor(parseInt(opts.maxWorkers))
     const leadQs = new Map<string, CommandQueue<any>>()
+    const apiPort = await findAvailablePort(PORT)
     const dashboard = await ensureDashboardServer({
-      apiPort: PORT,
+      apiPort,
       dashboardPort: DASHBOARD_PORT,
       stateDir: ORC_PATHS.stateDir,
       webRoot: WEB_ROOT,
@@ -108,13 +110,13 @@ program
     const app    = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url })
     const server = http.createServer(app)
     attachWebSocket(server)
-    await new Promise<void>(resolve => server.listen(PORT, resolve))
+    await new Promise<void>(resolve => server.listen(apiPort, resolve))
     const unregisterCleanup = registerCleanup(() => {
       dashboard.stop()
       server.close()
     })
 
-    console.log(`[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${PORT}`)
+    console.log(`[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${apiPort}`)
 
     const watchdog = new Watchdog({ db, intervalMs: 5000, stalledThresholdMs: 60_000 })
     watchdog.start()
@@ -198,8 +200,9 @@ program
     const db     = initDb(DB_PATH)
     seedSeqsFromDb(db)
     const leadQs = new Map<string, CommandQueue<any>>()
+    const apiPort = await findAvailablePort(PORT)
     const dashboard = await ensureDashboardServer({
-      apiPort: PORT,
+      apiPort,
       dashboardPort: DASHBOARD_PORT,
       stateDir: ORC_PATHS.stateDir,
       webRoot: WEB_ROOT,
@@ -207,12 +210,12 @@ program
     const app    = createApp({ db, leadQueues: leadQs, dashboardUrl: dashboard.url })
     const server = http.createServer(app)
     attachWebSocket(server)
-    await new Promise<void>(resolve => server.listen(PORT, resolve))
+    await new Promise<void>(resolve => server.listen(apiPort, resolve))
     registerCleanup(() => {
       dashboard.stop()
       server.close()
     })
-    console.log(`[orc] resumed dashboard at ${dashboard.url}`)
+    console.log(`[orc] resumed dashboard at ${dashboard.url}  |  api → http://localhost:${apiPort}`)
     const inFlight = getAllTasks(db).filter(t => ['running','queued','stalled','zombie'].includes(t.state))
     if (inFlight.length) { console.log('[orc] in-flight tasks:'); console.table(inFlight) }
     else console.log('[orc] no in-flight tasks found')
