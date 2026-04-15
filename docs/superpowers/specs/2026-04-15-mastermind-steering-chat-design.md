@@ -104,11 +104,15 @@ This keeps the route thin and avoids mixing HTTP concerns with orchestration beh
 
 The API already uses in-process `CommandQueue` instances for lead commands. The steering chat should extend this pattern with a dedicated mastermind queue owned by the active run.
 
-Add a new command variant for mastermind:
+Add a separate `MastermindCommand` contract and queue for mastermind-only transport. Do not extend the existing shared lead `OrcCommand` union with a mastermind-only command.
+
+Required mastermind command variant:
 
 - `Steer`: references the persisted message id and run id
 
 The route does not pass raw text directly into business logic after validation. It stores the message first, then enqueues a command pointing at the stored record. That makes retry and debugging safer because the queue item refers to durable state instead of transient request payload.
+
+This segregation is required because the existing lead queues already consume lead-scoped command types. A mastermind-only steering command must not be legally accepted by per-lead queues.
 
 ### 5.3 Transcript Storage
 
@@ -216,6 +220,7 @@ Validation:
 
 Response behavior:
 
+- `GET /api/steer` returns transcript plus a `steerable` boolean whenever `current` resolves to a known run, including non-steerable runs such as `review_ready`, `done`, or `failed`
 - on success, return the stored user message with status `pending`
 - the route does not block on the mastermind reply
 - the dashboard invalidates and refetches transcript data after submit to pick up the later reply
@@ -228,12 +233,12 @@ Examples:
 
 - `400` for invalid body
 - `404` when the run is unknown or `runId` does not resolve to the single active run
-- `409` when the run exists but is not currently steerable
+- `409` when a `POST /api/steer` request targets a known run that is not currently steerable
 - `503` when the run is active but the live mastermind transport is unavailable
 
 If persistence succeeds but queue delivery fails, the user message remains stored with `delivery_failed`. This avoids losing user intent and gives the UI something truthful to render.
 
-These semantics apply to both `GET /api/steer` and `POST /api/steer`. `GET /api/steer?runId=current` returns `404` when there is no active run or when the backend cannot resolve `current`.
+`GET /api/steer?runId=current` returns `404` when there is no known run or when the backend cannot resolve `current`. It does not return `409` for a non-steerable run; instead it returns the transcript and `steerable: false` so the dashboard can render the read-only mastermind view correctly.
 
 ## 7. Dashboard UX
 
@@ -260,7 +265,8 @@ Behavior:
 5. UI posts to `/api/steer`
 6. on success, UI appends the persisted user message returned by the API response
 7. UI invalidates and refetches transcript data
-8. mastermind reply appears when persisted by the backend
+8. refetched transcript data replaces the local transcript cache, using message ids as stable identities
+9. mastermind reply appears when persisted by the backend
 
 The MVP does not introduce a new WebSocket event for steering replies. Transcript freshness comes from explicit invalidation after submit plus normal query refetching while the mastermind detail view is active.
 
