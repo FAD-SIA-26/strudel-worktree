@@ -18,6 +18,7 @@ export class CodexCLIAdapter implements WorkerAgent {
   async run(task: WorkerTask, ctx: WorkerContext): Promise<WorkerResult> {
     const sessionPath = path.join(ctx.worktreePath, '.orc', '.orc-session.jsonl')
     const session = await fs.open(sessionPath, 'a')
+    await ctx.onSessionLogOpened?.(sessionPath)
     const prompt = [
       'You are an ORC worker subagent running unattended inside a git worktree.',
       'Execute the assigned implementation task directly.',

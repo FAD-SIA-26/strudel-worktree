@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
 import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
-import { upsertTask } from '../db/queries'
+import { upsertArtifact, upsertTask } from '../db/queries'
 import { createRunPlan } from '../git/planFiles'
 import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
@@ -90,6 +90,9 @@ export class MastermindStateMachine {
     const runPlanPath = await createRunPlan(this.cfg.repoRoot, this.cfg.runId, {
       userGoal: opts.userGoal, sections: sections.map(s => s.id),
     }).catch(() => '')
+    if (runPlanPath) {
+      upsertArtifact(this.cfg.db, this.cfg.runId, 'run_plan', runPlanPath)
+    }
 
     const sqlite = getSQLite(this.cfg.db)
     for (const section of sections) {

@@ -1,6 +1,6 @@
 import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
-import { upsertTask } from '../db/queries'
+import { upsertArtifact, upsertTask } from '../db/queries'
 import { createLeadPlan } from '../git/planFiles'
 import { laneBranchName, laneWorktreePath } from '../git/branchLayout'
 import { addWorktreeForBranch, createBranch, mergeBranch } from '../git/worktree'
@@ -145,6 +145,9 @@ export class LeadStateMachine {
       sectionGoal:    this.cfg.sectionGoal,
       workerVariants: workerPrompts,
     }).catch(() => '')
+    if (leadPlanPath) {
+      upsertArtifact(this.cfg.db, this.cfg.id, 'lead_plan', leadPlanPath)
+    }
 
     this.emit('LeadPlanReady', { workerPrompts })
     this.state = 'running'

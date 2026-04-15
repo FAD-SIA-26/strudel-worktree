@@ -67,6 +67,7 @@ describe('CodexCLIAdapter', () => {
     const worktreePath = path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`)
     openMock.mockResolvedValue({ write: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) })
     const onHeartbeat = vi.fn()
+    const onSessionLogOpened = vi.fn()
 
     const runPromise = new CodexCLIAdapter().run(
       { id: 'w1', prompt: 'do the thing', maxRetries: 1, errorHistory: [] },
@@ -79,6 +80,7 @@ describe('CodexCLIAdapter', () => {
         leadPlanPath: 'lead-plan.md',
         runPlanPath: 'run-plan.md',
         onHeartbeat,
+        onSessionLogOpened,
       },
     )
 
@@ -111,6 +113,7 @@ describe('CodexCLIAdapter', () => {
     expect(prompt).toContain('Update .orc/worker-plan.md')
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ pid: expect.any(Number), output: 'codex process started' }))
     expect(onHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ output: 'worker output\n' }))
+    expect(onSessionLogOpened).toHaveBeenCalledWith(path.join(worktreePath, '.orc', '.orc-session.jsonl'))
     expect(result).toEqual({
       status: 'done',
       branch: 'feat/w1',

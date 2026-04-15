@@ -9,6 +9,7 @@ export interface WorkerContext {
   leadPlanPath: string
   runPlanPath: string
   onHeartbeat?: (heartbeat: WorkerHeartbeat) => void | Promise<void>
+  onSessionLogOpened?: (sessionPath: string) => void | Promise<void>
 }
 export interface WorkerResult  { status: 'done'|'failed'; branch: string; diff?: string; error?: string; retryable: boolean }
 export interface WorkerAgent   { run(task: WorkerTask, ctx: WorkerContext): Promise<WorkerResult>; abort(): Promise<void> }

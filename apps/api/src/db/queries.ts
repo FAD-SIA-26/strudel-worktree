@@ -87,3 +87,15 @@ export function upsertArtifact(db: Db, entityId: string, artifactType: string, f
   getSQLite(db).prepare(`INSERT INTO artifacts(entity_id,artifact_type,path,updated_at) VALUES(?,?,?,?)
     ON CONFLICT(entity_id,artifact_type) DO UPDATE SET path=excluded.path, updated_at=excluded.updated_at`).run(entityId, artifactType, filePath, Date.now())
 }
+
+export function getArtifactPath(db: Db, entityId: string, artifactType: string): string | null {
+  const row = getSQLite(db)
+    .prepare(`
+      SELECT path
+      FROM artifacts
+      WHERE entity_id=? AND artifact_type=?
+    `)
+    .get(entityId, artifactType) as { path: string } | undefined
+
+  return row?.path ?? null
+}

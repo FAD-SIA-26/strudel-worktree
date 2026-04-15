@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import type { WorkerTask, WorkerAgent, WorkerHeartbeat } from '../agents/types'
 import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
-import { upsertTask, upsertWorktree } from '../db/queries'
+import { upsertArtifact, upsertTask, upsertWorktree } from '../db/queries'
 import { commitWorktreeChanges, createWorktree } from '../git/worktree'
 import { createWorkerPlan } from '../git/planFiles'
 import { ConcurrencyGovernor } from './concurrency'
@@ -92,6 +92,7 @@ export class WorkerStateMachine {
       objective:  task.prompt,
       strategy:   task.strategy ?? 'default',
     })
+    upsertArtifact(this.cfg.db, this.cfg.id, 'worker_plan', planPath)
 
     this.state = 'running'
     this.recordHeartbeat({ ts: Date.now(), output: 'worker initialized' })
@@ -107,6 +108,7 @@ export class WorkerStateMachine {
       leadPlanPath: this.cfg.leadPlanPath ?? '',
       runPlanPath:  this.cfg.runPlanPath  ?? '',
       onHeartbeat:  heartbeat => this.recordHeartbeat(heartbeat),
+      onSessionLogOpened: sessionPath => upsertArtifact(this.cfg.db, this.cfg.id, 'session_log', sessionPath),
     })
 
     if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }
