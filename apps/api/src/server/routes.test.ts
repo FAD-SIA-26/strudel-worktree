@@ -532,11 +532,67 @@ describe('routes', () => {
       SET selected_winner_worker_id = ?
       WHERE lead_id = ?
     `).run('chords-v2', 'chords-lead')
+    upsertWorktree(db, 'chords-v2', 'chords-v2', '/tmp/chords-v2', 'feat/chords-v2', 'main')
 
     const resAfterSelection = await request(app).get('/api/orchestration')
     const melodyAfterSelection = resAfterSelection.body.sections.find((s: any) => s.id === 'melody')
 
     expect(melodyAfterSelection.workers[0].contextAvailable).toBe(true)
+  })
+
+  it('GET /api/orchestration hides stale contextual previews when upstream winner selection changes', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+    const now = Date.now()
+
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('bass-lead', 'lead', 'mastermind', 'done', now, now)
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('melody-lead', 'lead', 'mastermind', 'running', now, now)
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('melody-v1', 'worker', 'melody-lead', 'done', now, now)
+    sqlite.prepare(`INSERT INTO task_edges (parent_id, child_id, edge_type) VALUES (?, ?, ?)`)
+      .run('bass-lead', 'melody-lead', 'depends_on')
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'bass-lead',
+      'bass-lead',
+      'bass-v2',
+      'bass-v2',
+      'lane/test/bass',
+      'seed proposal',
+      'proposal_accept',
+    )
+    upsertWorktree(db, 'bass-v2', 'bass-v2', '/tmp/bass-v2', 'feat/bass-v2', 'main')
+    sqlite.prepare(`
+      INSERT INTO previews(worker_id, mode, preview_url, generated_code, source_files, context_winner_ids, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'melody-v1',
+      'contextual',
+      'https://example.test/stale-context',
+      'stack(sound("bd"), sound("lead"))\n',
+      '["src/bass.js","src/melody.js"]',
+      '["bass-v1"]',
+      now,
+    )
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+    const melodySection = res.body.sections.find((s: any) => s.id === 'melody')
+
+    expect(res.status).toBe(200)
+    expect(melodySection.workers[0].contextAvailable).toBe(true)
+    expect(melodySection.workers[0].previewArtifacts).toEqual([])
   })
 
   it('GET /api/orchestration prefers the newest run worktree for run-level state', async () => {
@@ -710,6 +766,73 @@ describe('routes', () => {
       entries: [],
       tailCursor: null,
     })
+  })
+
+  it('GET /api/orchestration sets contextAvailable=false when upstream winner has no worktree row', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+
+    // bass-lead is done, winner selected
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    // bass winner's worktree intentionally NOT inserted
+
+    // chords-lead depends on bass-lead
+    upsertTask(db, 'chords-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-chords-v1', 'worker', 'chords-lead', 'done')
+    upsertWorktree(db, 'r1-chords-v1', 'r1-chords-v1', '/tmp/r1-chords-v1', 'feat/r1-chords-v1', 'main')
+
+    // run worktree to anchor runId
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+
+    sqlite.prepare(`
+      INSERT INTO task_edges(parent_id, child_id, edge_type) VALUES (?, ?, ?)
+    `).run('bass-lead', 'chords-lead', 'depends_on')
+
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(id, lead_id, proposed_winner_worker_id, selected_winner_worker_id, target_branch, reviewer_reasoning, selection_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('bass-lead', 'bass-lead', 'r1-bass-v1', 'r1-bass-v1', 'lane/r1/bass', 'auto', 'proposal_accept')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    const chordsSection = res.body.sections.find((s: any) => s.id === 'chords')
+    expect(chordsSection.workers[0].contextAvailable).toBe(false)
+  })
+
+  it('GET /api/orchestration sets contextAvailable=true when upstream winner and worktree both exist', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+
+    // bass-lead done with winner + worktree
+    upsertTask(db, 'bass-lead', 'lead', 'mastermind', 'done')
+    upsertTask(db, 'r1-bass-v1', 'worker', 'bass-lead', 'done')
+    upsertWorktree(db, 'r1-bass-v1', 'r1-bass-v1', '/tmp/r1-bass-v1', 'feat/r1-bass-v1', 'main')
+
+    // chords-lead depends on bass-lead
+    upsertTask(db, 'chords-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'r1-chords-v1', 'worker', 'chords-lead', 'done')
+    upsertWorktree(db, 'r1-chords-v1', 'r1-chords-v1', '/tmp/r1-chords-v1', 'feat/r1-chords-v1', 'main')
+
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+
+    sqlite.prepare(`
+      INSERT INTO task_edges(parent_id, child_id, edge_type) VALUES (?, ?, ?)
+    `).run('bass-lead', 'chords-lead', 'depends_on')
+
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(id, lead_id, proposed_winner_worker_id, selected_winner_worker_id, target_branch, reviewer_reasoning, selection_source)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('bass-lead', 'bass-lead', 'r1-bass-v1', 'r1-bass-v1', 'lane/r1/bass', 'auto', 'proposal_accept')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    const chordsSection = res.body.sections.find((s: any) => s.id === 'chords')
+    expect(chordsSection.workers[0].contextAvailable).toBe(true)
   })
 
   it('GET /api/entities/:entityId/logs returns the latest worker log window oldest-first', async () => {

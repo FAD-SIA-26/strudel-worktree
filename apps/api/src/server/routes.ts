@@ -23,6 +23,21 @@ function isInActiveRun(workerId: string, runId: string): boolean {
   return runId === 'current' || workerBelongsToRun(workerId, runId)
 }
 
+function parseContextWinnerIds(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string').sort()
+      : []
+  } catch {
+    return []
+  }
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 export function createRoutes({ db, leadQueues }: AppDeps): Router {
   const r = Router()
 
@@ -47,10 +62,21 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
         .filter(worktree => scopedWorkerIds.has(worktree.workerId))
         .map(worktree => [worktree.workerId, worktree]),
     )
-    const previewsByWorker = new Map<string, Array<{ mode: 'solo' | 'contextual'; previewUrl: string }>>()
+    const allWorktreeByWorker = new Map(
+      worktrees.map(worktree => [worktree.workerId, worktree]),
+    )
+    const previewsByWorker = new Map<string, Array<{
+      mode: 'solo' | 'contextual'
+      previewUrl: string
+      contextWinnerIds: string[]
+    }>>()
     for (const preview of previews.filter(preview => scopedWorkerIds.has(preview.workerId))) {
       const entries = previewsByWorker.get(preview.workerId) ?? []
-      entries.push({ mode: preview.mode, previewUrl: preview.previewUrl })
+      entries.push({
+        mode: preview.mode,
+        previewUrl: preview.previewUrl,
+        contextWinnerIds: parseContextWinnerIds(preview.contextWinnerIds),
+      })
       previewsByWorker.set(preview.workerId, entries)
     }
 
@@ -60,6 +86,10 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
       const upstreamLeadIds = taskEdges
         .filter(edge => edge.edgeType === 'depends_on' && edge.childId === lead.id)
         .map(edge => edge.parentId)
+      const currentContextWinnerIds = upstreamLeadIds
+        .map(depLeadId => mergeCandidateByLead.get(depLeadId)?.selectedWinnerWorkerId)
+        .filter((winnerId): winnerId is string => Boolean(winnerId))
+        .sort()
 
       return {
         id: lead.id.replace('-lead', ''),
@@ -78,7 +108,15 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
             && isInActiveRun(task.id, runId),
         ).map(worker => {
           const wt = worktreeByWorker.get(worker.id)
-          const previewArtifacts = previewsByWorker.get(worker.id) ?? []
+          const previewArtifacts = (previewsByWorker.get(worker.id) ?? [])
+            .filter(preview =>
+              preview.mode !== 'contextual'
+              || arraysEqual(preview.contextWinnerIds, currentContextWinnerIds)
+            )
+            .map(preview => ({
+              mode: preview.mode,
+              previewUrl: preview.previewUrl,
+            }))
           const awaitingUserApproval = lead.state === 'awaiting_user_approval'
 
           return {
@@ -89,9 +127,11 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
             isSelected: selectedWinnerWorkerId === worker.id,
             canBeSelected: awaitingUserApproval && worker.state === 'done' && selectedWinnerWorkerId !== worker.id,
             isStopping: worker.state === 'stopping',
-            contextAvailable: upstreamLeadIds.length > 0 && upstreamLeadIds.every(depLeadId =>
-              Boolean(mergeCandidateByLead.get(depLeadId)?.selectedWinnerWorkerId)
-            ),
+            contextAvailable: upstreamLeadIds.length > 0 && upstreamLeadIds.every(depLeadId => {
+              const winnerId = mergeCandidateByLead.get(depLeadId)?.selectedWinnerWorkerId
+              if (!winnerId) return false
+              return Boolean(allWorktreeByWorker.get(winnerId))
+            }),
             previewArtifacts,
           }
         }),
