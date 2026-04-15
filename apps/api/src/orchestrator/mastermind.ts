@@ -2,7 +2,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
 import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
-import { upsertArtifact, upsertTask } from '../db/queries'
+import { upsertArtifact, upsertTask, upsertWorktree } from '../db/queries'
 import { createRunPlan } from '../git/planFiles'
 import { ConcurrencyGovernor, configureGovernor } from './concurrency'
 import { LeadStateMachine } from './lead'
@@ -48,6 +48,49 @@ export class MastermindStateMachine {
 
   constructor(private readonly cfg: MastermindConfig) {
     this.ctx = new ContextManager(cfg.repoRoot)
+  }
+
+  private resetLeadStateForRun(sections: SectionPlan[]): void {
+    const sqlite = getSQLite(this.cfg.db)
+    const leadIds = sections.map(section => `${section.id}-lead`)
+    const existingLeadIds = sqlite.prepare(`
+      SELECT id
+      FROM tasks
+      WHERE type='lead' AND parent_id='mastermind'
+    `).all() as Array<{ id: string }>
+    const affectedLeadIds = [...new Set([...existingLeadIds.map(row => row.id), ...leadIds])]
+
+    if (affectedLeadIds.length > 0) {
+      const placeholders = affectedLeadIds.map(() => '?').join(', ')
+      sqlite.prepare(`
+        DELETE FROM merge_candidates
+        WHERE lead_id IN (${placeholders})
+      `).run(...affectedLeadIds)
+      sqlite.prepare(`
+        DELETE FROM task_edges
+        WHERE parent_id IN (${placeholders}) OR child_id IN (${placeholders})
+      `).run(...affectedLeadIds, ...affectedLeadIds)
+    }
+
+    if (leadIds.length === 0) {
+      sqlite.prepare(`
+        DELETE FROM tasks
+        WHERE type='lead' AND parent_id='mastermind'
+      `).run()
+      return
+    }
+
+    const placeholders = leadIds.map(() => '?').join(', ')
+    sqlite.prepare(`
+      DELETE FROM tasks
+      WHERE type='lead'
+        AND parent_id='mastermind'
+        AND id NOT IN (${placeholders})
+    `).run(...leadIds)
+
+    for (const leadId of leadIds) {
+      upsertTask(this.cfg.db, leadId, 'lead', 'mastermind', 'idle')
+    }
   }
 
   private emit(eventType: string, payload: Record<string, unknown>): void {
@@ -97,6 +140,7 @@ export class MastermindStateMachine {
     }
 
     const sqlite = getSQLite(this.cfg.db)
+    this.resetLeadStateForRun(sections)
     for (const section of sections) {
       for (const dep of section.dependsOn) {
         sqlite.prepare(`
@@ -115,6 +159,14 @@ export class MastermindStateMachine {
     await addWorktreeForBranch(this.cfg.repoRoot, runWtPath, runBranch, { hydrateDependencies: false }).catch(err => {
       if (!err.message?.includes('already exists') && !err.message?.includes('is already checked out')) throw err
     })
+    upsertWorktree(
+      this.cfg.db,
+      `run-${this.cfg.runId}`,
+      `run-${this.cfg.runId}`,
+      runWtPath,
+      runBranch,
+      this.cfg.baseBranch,
+    )
 
     this.emit('PlanReady', { sections: sections.map(s => s.id), runId: this.cfg.runId })
     this.state = 'delegating'

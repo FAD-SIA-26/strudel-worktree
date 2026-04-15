@@ -8,6 +8,7 @@ import { useEntityDetail } from '../hooks/useEntityDetail'
 import { useEntityLogs } from '../hooks/useEntityLogs'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
+const API_UNAVAILABLE_MESSAGE = 'Unable to reach the ORC API. Start or resume ORC and try again.'
 
 const WORKER_STATE_CFG: Record<string, { dot: string; text: string }> = {
   queued: { dot: 'bg-gray-500', text: 'text-gray-500' },
@@ -67,6 +68,17 @@ function previewFor(worker: WorkerInfo, mode: 'solo' | 'contextual') {
   return worker.previewArtifacts.find(p => p.mode === mode)
 }
 
+async function readActionError(res: Response): Promise<string> {
+  try {
+    const payload = await res.json() as { error?: string }
+    if (typeof payload?.error === 'string' && payload.error.length > 0) {
+      return payload.error
+    }
+  } catch {}
+
+  return `Request failed (${res.status})`
+}
+
 export function DetailPanel({ selectedId, sections }: {
   selectedId: string | null
   sections: SectionInfo[]
@@ -79,9 +91,11 @@ export function DetailPanel({ selectedId, sections }: {
     isLead ? 'compare' : 'plan'
   )
   const [pendingWinnerId, setPendingWinnerId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     setTab(isLead ? 'compare' : 'plan')
+    setActionError(null)
   }, [isLead, selectedId])
 
   if (!selectedId) {
@@ -113,15 +127,30 @@ export function DetailPanel({ selectedId, sections }: {
   const selectedWorker = getSelectedWorker(section)
   const canChooseWinner = Boolean(leadId && leadSection?.awaitingUserApproval)
 
+  async function postAction(path: string, body: Record<string, unknown>) {
+    setActionError(null)
+    try {
+      const res = await fetch(`${API}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) {
+        setActionError(await readActionError(res))
+        return null
+      }
+      return res
+    } catch {
+      setActionError(API_UNAVAILABLE_MESSAGE)
+      return null
+    }
+  }
+
   async function approveProposal(targetLeadId: string) {
     setPendingWinnerId(proposedWorker?.id ?? null)
     try {
-      const res = await fetch(`${API}/api/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leadId: targetLeadId }),
-      })
-      if (res.ok) {
+      const res = await postAction('/api/approve', { leadId: targetLeadId })
+      if (res) {
         await qc.invalidateQueries({ queryKey: ['orchestration'] })
       }
     } finally {
@@ -132,12 +161,8 @@ export function DetailPanel({ selectedId, sections }: {
   async function pickWinner(workerId: string, targetLeadId: string) {
     setPendingWinnerId(workerId)
     try {
-      const res = await fetch(`${API}/api/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workerId, leadId: targetLeadId }),
-      })
-      if (res.ok) {
+      const res = await postAction('/api/approve', { workerId, leadId: targetLeadId })
+      if (res) {
         await qc.invalidateQueries({ queryKey: ['orchestration'] })
       }
     } finally {
@@ -149,12 +174,10 @@ export function DetailPanel({ selectedId, sections }: {
     const targetLeadId = isLead ? selectedId : leadId
     if (!targetLeadId) return
 
-    await fetch(`${API}/api/drop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerId: selectedId, leadId: targetLeadId }),
-    })
-    await qc.invalidateQueries({ queryKey: ['orchestration'] })
+    const res = await postAction('/api/drop', { workerId: selectedId, leadId: targetLeadId })
+    if (res) {
+      await qc.invalidateQueries({ queryKey: ['orchestration'] })
+    }
   }
 
   const tabs = isLead
@@ -242,6 +265,11 @@ export function DetailPanel({ selectedId, sections }: {
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 p-5">
+        {actionError && (
+          <div className="max-w-2xl mb-4 rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-[11px] text-red-200">
+            {actionError}
+          </div>
+        )}
         {tab === 'compare' && isLead && section && (
           <div className="max-w-2xl space-y-2">
             <p className="text-[11px] text-gray-600 mb-4">

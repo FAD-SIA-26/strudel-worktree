@@ -12,6 +12,13 @@ interface DashboardOptions {
   webRoot?: string;
 }
 
+interface DashboardRuntimeTargets {
+  apiUrl: string;
+  wsUrl: string;
+}
+
+type ReadProcessEnv = (pid: number) => NodeJS.ProcessEnv | null;
+
 export interface DashboardHandle {
   process: ChildProcess | null;
   url: string;
@@ -69,25 +76,127 @@ function waitForDashboard(url: string, timeoutMs = 20_000): Promise<void> {
   });
 }
 
-export function pickReusableDashboardUrl(output: string): string | null {
-  if (!output.includes("Another next dev server is already running"))
+function pickReusableDashboardDetails(
+  output: string,
+): { url: string; pid: number | null } | null {
+  if (!output.includes("Another next dev server is already running")) {
     return null;
+  }
+
   const matches = [...output.matchAll(/Local:\s+(https?:\/\/[^\s]+)/g)];
-  return matches.at(-1)?.[1] ?? null;
+  const url = matches.at(-1)?.[1] ?? null;
+  if (!url) {
+    return null;
+  }
+
+  const pidMatches = [...output.matchAll(/PID:\s+(\d+)/g)];
+  const pidValue = pidMatches.at(-1)?.[1];
+  const pid = pidValue ? Number.parseInt(pidValue, 10) : null;
+
+  return { url, pid: Number.isFinite(pid) ? pid : null };
+}
+
+function normalizeRuntimeUrl(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(url);
+    const hostname = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)
+      ? "loopback"
+      : parsed.hostname;
+    const port = parsed.port
+      || (parsed.protocol === "http:" || parsed.protocol === "ws:" ? "80" : "")
+      || (parsed.protocol === "https:" || parsed.protocol === "wss:" ? "443" : "");
+
+    return `${parsed.protocol}//${hostname}:${port}`;
+  } catch {
+    return null;
+  }
+}
+
+function readProcessEnv(pid: number): NodeJS.ProcessEnv | null {
+  try {
+    const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
+    return Object.fromEntries(
+      env
+        .split("\0")
+        .filter(Boolean)
+        .map((entry) => {
+          const index = entry.indexOf("=");
+          return index === -1
+            ? [entry, ""]
+            : [entry.slice(0, index), entry.slice(index + 1)];
+        }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function matchesRuntimeTargets(
+  env: NodeJS.ProcessEnv,
+  expectedTargets: DashboardRuntimeTargets,
+): boolean {
+  return (
+    normalizeRuntimeUrl(env.NEXT_PUBLIC_API_URL) === normalizeRuntimeUrl(expectedTargets.apiUrl)
+    && normalizeRuntimeUrl(env.NEXT_PUBLIC_WS_URL) === normalizeRuntimeUrl(expectedTargets.wsUrl)
+  );
+}
+
+export function pickReusableDashboardUrl(
+  output: string,
+  expectedTargets?: DashboardRuntimeTargets,
+  readEnv: ReadProcessEnv = readProcessEnv,
+): string | null {
+  const reusable = pickReusableDashboardDetails(output);
+  if (!reusable) {
+    return null;
+  }
+
+  if (!expectedTargets) {
+    return reusable.url;
+  }
+
+  if (!reusable.pid) {
+    return null;
+  }
+
+  const env = readEnv(reusable.pid);
+  if (!env || !matchesRuntimeTargets(env, expectedTargets)) {
+    return null;
+  }
+
+  return reusable.url;
 }
 
 export function pickDashboardCandidateUrls(
   output: string,
   preferredPort: number,
+  reusableDashboardUrl = pickReusableDashboardUrl(output),
 ): string[] {
+  const rawReusableDashboardUrl = pickReusableDashboardDetails(output)?.url ?? null;
+  const stalePreferredPort = reusableDashboardUrl === null
+    && rawReusableDashboardUrl !== null
+    && (() => {
+      try {
+        return new URL(rawReusableDashboardUrl).port === String(preferredPort);
+      } catch {
+        return false;
+      }
+    })();
   const matches = [...output.matchAll(/Local:\s+(https?:\/\/[^\s]+)/g)]
     .map((match) => match[1])
+    .filter((url) => (
+      url !== rawReusableDashboardUrl || reusableDashboardUrl === rawReusableDashboardUrl
+    ))
     .filter((url): url is string => Boolean(url));
 
   const candidates = [
-    pickReusableDashboardUrl(output),
-    `http://127.0.0.1:${preferredPort}`,
-    `http://localhost:${preferredPort}`,
+    reusableDashboardUrl,
+    stalePreferredPort ? null : `http://127.0.0.1:${preferredPort}`,
+    stalePreferredPort ? null : `http://localhost:${preferredPort}`,
     ...matches,
   ].filter((url): url is string => Boolean(url));
 
@@ -249,9 +358,18 @@ export async function ensureDashboardServer(
   } catch (error) {
     if (!(error instanceof DashboardStartupError)) throw error;
 
+    const reusableDashboardUrl = pickReusableDashboardUrl(
+      error.output,
+      {
+        apiUrl: `http://localhost:${opts.apiPort}`,
+        wsUrl: `ws://localhost:${opts.apiPort}`,
+      },
+    );
+
     for (const candidateUrl of pickDashboardCandidateUrls(
       error.output,
       opts.dashboardPort,
+      reusableDashboardUrl,
     )) {
       try {
         await waitForDashboard(candidateUrl, 5_000);

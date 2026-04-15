@@ -14,6 +14,7 @@ import type { OrcEvent, OrcCommand } from '@orc/types'
 export type LeadState = 'idle'|'planning'|'running'|'awaiting_user_approval'|'merging_lane'|'done'|'failed'
 export interface LeadResult { status: 'done'|'failed'; laneBranch: string; reasoning: string }
 type CompletedWorker = { workerId: string; diff: string; branch: string }
+const REVIEWER_FALLBACK_REASONING = 'reviewer unavailable; defaulted to the first completed worker'
 
 interface LeadConfig {
   id:           string
@@ -151,8 +152,8 @@ export class LeadStateMachine {
       upsertArtifact(this.cfg.db, this.cfg.id, 'lead_plan', leadPlanPath)
     }
 
-    this.emit('LeadPlanReady', { workerPrompts })
     this.state = 'running'
+    this.emit('LeadPlanReady', { workerPrompts })
 
     const workers = workerPrompts.map((prompt, i) => new WorkerStateMachine({
       id:           `${this.cfg.runId}-${this.cfg.sectionId}-v${i + 1}`,
@@ -220,12 +221,9 @@ export class LeadStateMachine {
       reasoning = typeof rev.reasoning === 'string' && rev.reasoning.trim().length > 0
         ? rev.reasoning
         : 'reviewer proposal'
-    } catch (error: unknown) {
-      this.state = 'failed'
-      this.emit('LeadFailed', {
-        reason: error instanceof Error ? error.message : 'reviewer failed',
-      })
-      return { status: 'failed', laneBranch: '', reasoning: 'reviewer failed' }
+    } catch {
+      proposedWinnerWorkerId = done[0].workerId
+      reasoning = REVIEWER_FALLBACK_REASONING
     }
 
     this.state = 'awaiting_user_approval'

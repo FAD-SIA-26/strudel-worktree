@@ -16,6 +16,59 @@ async function sleep(ms: number): Promise<void> {
 }
 
 describe('LeadStateMachine', () => {
+  it('persists the lead as running while workers are active', async () => {
+    repoDir = initTestRepo('lead-running-state-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const q = new CommandQueue<any>()
+    const lead = new LeadStateMachine({
+      id: 'rhythm-lead', sectionId: 'rhythm', sectionGoal: 'Write rhythm section',
+      numWorkers: 2, baseBranch: 'main', laneBranch: laneBranchName('r5', 'rhythm'), runId: 'r5',
+      repoRoot: repoDir, db, governor: gov,
+      commandQueue: q,
+      agentFactory: () => new MockAgent({ delayMs: 1200, outcome: 'done' }),
+      llmCall: async p => {
+        if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
+        return JSON.stringify({ winnerId: 'r5-rhythm-v1', reasoning: 'best diff' })
+      },
+    })
+
+    const runPromise = lead.run()
+    const sqlite = getSQLite(db)
+
+    let leadRow: { state: string } | undefined
+    let workerRows: Array<{ state: string }> = []
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      leadRow = sqlite.prepare('SELECT state FROM tasks WHERE id=?').get('rhythm-lead') as { state: string } | undefined
+      workerRows = sqlite.prepare(`
+        SELECT state
+        FROM tasks
+        WHERE type='worker' AND parent_id=?
+        ORDER BY id
+      `).all('rhythm-lead') as Array<{ state: string }>
+      if (
+        lead.state === 'running'
+        && workerRows.length === 2
+        && workerRows.every(worker => worker.state === 'running')
+      ) {
+        break
+      }
+      await sleep(25)
+    }
+
+    expect(lead.state).toBe('running')
+    expect(workerRows).toHaveLength(2)
+    expect(workerRows.every(worker => worker.state === 'running')).toBe(true)
+    expect(leadRow).toEqual({ state: 'running' })
+
+    while (lead.state !== 'awaiting_user_approval') {
+      await sleep(25)
+    }
+    q.enqueue({ commandType: 'AcceptProposal' })
+    await runPromise
+  }, 30_000)
+
   it('reviewer proposes a winner and lead waits for explicit user approval', async () => {
     repoDir = initTestRepo('lead-test')
     const db = createTestDb()
@@ -151,7 +204,7 @@ describe('LeadStateMachine', () => {
     })
   })
 
-  it('fails the lead when reviewer cannot produce a proposal', async () => {
+  it('falls back to the first completed worker when reviewer cannot produce a proposal', async () => {
     repoDir = initTestRepo('lead-reviewer-failure-test')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(4)
@@ -175,13 +228,25 @@ describe('LeadStateMachine', () => {
       },
     })
 
-    await expect(lead.run()).resolves.toEqual({
-      status: 'failed',
-      laneBranch: '',
-      reasoning: 'reviewer failed',
+    const runPromise = lead.run()
+    await sleep(75)
+
+    expect(lead.state).toBe('awaiting_user_approval')
+    expect(getSQLite(db).prepare(`
+      SELECT proposed_winner_worker_id AS proposedWinnerWorkerId, selected_winner_worker_id AS selectedWinnerWorkerId
+      FROM merge_candidates
+      WHERE id=?
+    `).get('drums-lead')).toEqual({
+      proposedWinnerWorkerId: 'r3-drums-v1',
+      selectedWinnerWorkerId: null,
     })
-    expect(lead.state).toBe('failed')
-    expect(getSQLite(db).prepare('SELECT COUNT(*) AS n FROM merge_candidates WHERE id=?').get('drums-lead')).toEqual({ n: 0 })
+
+    q.enqueue({ commandType: 'AcceptProposal' })
+    await expect(runPromise).resolves.toEqual({
+      status: 'done',
+      laneBranch: 'lane/r3/drums',
+      reasoning: 'reviewer unavailable; defaulted to the first completed worker',
+    })
   })
 
   it('ignores accepting a proposal after that worker was aborted during approval', async () => {

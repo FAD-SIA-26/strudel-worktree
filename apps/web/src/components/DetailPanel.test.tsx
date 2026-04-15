@@ -122,4 +122,76 @@ describe('DetailPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Diff' }))
     expect(screen.getByText(/diff --git a\/README.md b\/README.md/)).toBeInTheDocument()
   })
+
+  it('shows a recoverable API error when winner selection cannot reach the backend', async () => {
+    useEntityDetailMock.mockReturnValue({
+      data: {
+        entityId: 'main-lead',
+        entityType: 'lead',
+        title: 'main-lead',
+        resolvedPaths: {
+          planPath: '/repo/.orc/runs/r1/leads/main.md',
+          winnerWorktreePath: null,
+        },
+        plan: { status: 'ready', content: '# Lead Plan\n' },
+        diff: { status: 'empty', content: null, winnerWorkerId: null },
+      },
+      isLoading: false,
+    })
+    useEntityLogsMock.mockReturnValue({
+      entries: [],
+      status: 'ready',
+      error: null,
+    })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')))
+
+    const client = new QueryClient()
+    render(
+      <QueryClientProvider client={client}>
+        <DetailPanel
+          selectedId="main-lead"
+          sections={[
+            {
+              id: 'main',
+              state: 'awaiting_user_approval',
+              proposedWinnerWorkerId: 'main-v1',
+              selectedWinnerWorkerId: null,
+              selectionStatus: 'waiting_for_user',
+              awaitingUserApproval: true,
+              workers: [
+                {
+                  id: 'main-v1',
+                  state: 'done',
+                  branch: 'feat/main-v1',
+                  isProposed: true,
+                  isSelected: false,
+                  canBeSelected: false,
+                  isStopping: false,
+                  contextAvailable: false,
+                  previewArtifacts: [],
+                },
+                {
+                  id: 'main-v2',
+                  state: 'done',
+                  branch: 'feat/main-v2',
+                  isProposed: false,
+                  isSelected: false,
+                  canBeSelected: true,
+                  isStopping: false,
+                  contextAvailable: false,
+                  previewArtifacts: [],
+                },
+              ],
+            },
+          ]}
+        />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /choose this winner/i }))
+
+    expect(
+      await screen.findByText('Unable to reach the ORC API. Start or resume ORC and try again.'),
+    ).toBeInTheDocument()
+  })
 })

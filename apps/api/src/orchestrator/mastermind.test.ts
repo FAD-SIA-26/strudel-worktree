@@ -40,6 +40,14 @@ describe('MastermindStateMachine', () => {
     clearInterval(autoApprove)
     expect(result.status).toBe('review_ready')
     expect(result.runBranch).toBe('run/r1')
+    expect(getSQLite(db).prepare(`
+      SELECT worker_id AS workerId, branch
+      FROM worktrees
+      WHERE branch=?
+    `).get('run/r1')).toEqual({
+      workerId: 'run-r1',
+      branch: 'run/r1',
+    })
     expect(events).toContain('OrchestrationComplete')
     eventBus.removeAllListeners('event')
   }, 30_000)
@@ -121,6 +129,77 @@ describe('MastermindStateMachine', () => {
       childId: 'melody-lead',
       edgeType: 'depends_on',
     })
+  }, 30_000)
+
+  it('clears stale lead state from previous runs before recording the new plan', async () => {
+    repoDir = initTestRepo('mastermind-reset-test')
+    const db = createTestDb()
+    const gov = new ConcurrencyGovernor(4)
+    const sqlite = getSQLite(db)
+    sqlite.prepare(`
+      INSERT INTO tasks(id, type, parent_id, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('main-lead', 'lead', 'mastermind', 'done', Date.now(), Date.now())
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('main-lead', 'main-lead', 'old-main-v1', 'old-main-v1', 'lane/old/main', 'stale', 'proposal_accept')
+    sqlite.prepare(`
+      INSERT INTO task_edges(parent_id, child_id, edge_type)
+      VALUES (?, ?, ?)
+    `).run('main-lead', 'melody-lead', 'depends_on')
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('landing-lead', 'landing-lead', 'landing-v1', 'landing-v1', 'lane/other/landing', 'keep', 'proposal_accept')
+    sqlite.prepare(`
+      INSERT INTO task_edges(parent_id, child_id, edge_type)
+      VALUES (?, ?, ?)
+    `).run('landing-lead', 'copy-lead', 'depends_on')
+
+    const leadQueues = new Map<string, CommandQueue<any>>()
+    const m = new MastermindStateMachine({
+      repoRoot: repoDir,
+      db,
+      governor: gov,
+      runId: 'r-clean',
+      baseBranch: 'main',
+      leadQueues,
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
+      llmCall: async p => {
+        if (p.includes('Decompose')) return JSON.stringify([{ id: 'rhythm', goal: 'Write rhythm', numWorkers: 1, dependsOn: [] }])
+        if (p.includes('Generate')) return JSON.stringify(['only variation'])
+        return JSON.stringify({ winnerId: 'r-clean-rhythm-v1', reasoning: 'only one' })
+      },
+    })
+    const autoApprove = setInterval(() => {
+      const q = leadQueues.get('rhythm-lead')
+      if (q && q.size === 0) q.enqueue({ commandType: 'AcceptProposal' })
+    }, 10)
+
+    const result = await m.run({ userGoal: 'Clean up stale state' })
+    clearInterval(autoApprove)
+
+    expect(result.status).toBe('review_ready')
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM tasks WHERE id=?').get('main-lead')).toEqual({ n: 0 })
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM merge_candidates WHERE lead_id=?').get('main-lead')).toEqual({ n: 0 })
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM task_edges WHERE parent_id=? OR child_id=?').get('main-lead', 'main-lead')).toEqual({ n: 0 })
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM merge_candidates WHERE lead_id=?').get('landing-lead')).toEqual({ n: 1 })
+    expect(sqlite.prepare('SELECT COUNT(*) AS n FROM task_edges WHERE parent_id=? OR child_id=?').get('landing-lead', 'landing-lead')).toEqual({ n: 1 })
   }, 30_000)
 
   it('merges lane branches into the run branch and ends in review_ready', async () => {
