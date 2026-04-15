@@ -83,9 +83,6 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     const sections = tasks.filter(t => t.type === 'lead').map(lead => {
       const candidate = mergeCandidateByLead.get(lead.id)
       const selectedWinnerWorkerId = candidate?.selectedWinnerWorkerId ?? null
-      const upstreamLeadIds = taskEdges
-        .filter(edge => edge.edgeType === 'depends_on' && edge.childId === lead.id)
-        .map(edge => edge.parentId)
       const currentContextWinnerIds = tasks
         .filter(t => t.type === 'lead' && t.id !== lead.id)
         .map(t => mergeCandidateByLead.get(t.id)?.selectedWinnerWorkerId)
@@ -129,13 +126,7 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
             isSelected: selectedWinnerWorkerId === worker.id,
             canBeSelected: awaitingUserApproval && worker.state === 'done' && selectedWinnerWorkerId !== worker.id,
             isStopping: worker.state === 'stopping',
-            contextAvailable: tasks
-              .filter(t => t.type === 'lead' && t.id !== lead.id)
-              .some(otherLead => {
-                const winnerId = mergeCandidateByLead.get(otherLead.id)?.selectedWinnerWorkerId
-                if (!winnerId) return false
-                return Boolean(allWorktreeByWorker.get(winnerId))
-              }),
+            contextAvailable: currentContextWinnerIds.length > 0,
             previewArtifacts,
           }
         }),
