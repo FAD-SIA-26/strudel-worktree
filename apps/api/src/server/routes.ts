@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import * as path from 'node:path'
 import { Router } from 'express'
 import type { AppDeps } from './app'
 import { getAllTasks, getWorktrees, getPreviews, getMergeCandidates, getTaskEdges } from '../db/queries'
@@ -66,11 +68,15 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     })
 
     const reviewReady = mastermindState === 'review_ready'
+    const finalPreviewLaunchable = Boolean(
+      finalPreview?.previewUrl
+      || (runWorktree && existsSync(path.join(runWorktree.path, 'src/index.js')))
+    )
     res.json({
       runId,
       mastermindState,
       reviewReady,
-      fullSongPreviewAvailable: reviewReady,
+      fullSongPreviewAvailable: reviewReady && finalPreviewLaunchable,
       fullSongPreviewUrl: finalPreview?.previewUrl,
       sections,
     })
@@ -117,6 +123,13 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
   r.post('/drop', (req, res) => {
     const { workerId, leadId } = req.body
     if (!workerId || !leadId) { res.status(400).json({ error: 'workerId and leadId required' }); return }
+    const tasks = getAllTasks(db)
+    const worker = tasks.find(task => task.id === workerId && task.parentId === leadId && task.type === 'worker')
+    if (!worker) { res.status(404).json({ error: `worker ${workerId} not found for ${leadId}` }); return }
+    if (['done', 'failed', 'cancelled', 'stop_failed'].includes(worker.state)) {
+      res.status(409).json({ error: `worker ${workerId} is already terminal` })
+      return
+    }
     const q = leadQueues.get(leadId)
     if (q) { q.enqueue({ commandType: 'Abort', targetWorkerId: workerId }) }
     res.status(202).json({ ok: true })
@@ -140,6 +153,14 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     }
 
     const runId = runWorktree.branch?.replace('run/', '') ?? 'current'
+    const existingPreview = getPreviews(db).find(
+      preview => preview.workerId === `run:${runId}:final` && preview.mode === 'solo',
+    )
+    if (existingPreview) {
+      res.status(202).json(existingPreview)
+      return
+    }
+
     try {
       const artifact = await launchRunPreview(db, runId, runWorktree.path)
       res.status(202).json(artifact)

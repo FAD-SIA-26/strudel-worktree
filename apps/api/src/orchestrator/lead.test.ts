@@ -184,19 +184,12 @@ describe('LeadStateMachine', () => {
     expect(getSQLite(db).prepare('SELECT COUNT(*) AS n FROM merge_candidates WHERE id=?').get('drums-lead')).toEqual({ n: 0 })
   })
 
-  it('continues when sibling abort fails and records stop_failed worker state', async () => {
+  it('ignores accepting a proposal after that worker was aborted during approval', async () => {
     repoDir = initTestRepo('lead-stop-failed-test')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(4)
     const q = new CommandQueue<any>()
 
-    class StopFailingAgent extends MockAgent {
-      constructor() { super({ delayMs: 5, outcome: 'done' }) }
-
-      override async abort(): Promise<void> {
-        throw new Error('abort transport unavailable')
-      }
-    }
     const lead = new LeadStateMachine({
       id: 'pad-lead',
       sectionId: 'pad',
@@ -209,7 +202,7 @@ describe('LeadStateMachine', () => {
       db,
       governor: gov,
       commandQueue: q,
-      agentFactory: () => new StopFailingAgent(),
+      agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
         return JSON.stringify({ winnerId: 'r4-pad-v1', reasoning: 'v1 is best' })
@@ -218,20 +211,25 @@ describe('LeadStateMachine', () => {
 
     const runPromise = lead.run()
     await sleep(75)
+    q.enqueue({ commandType: 'Abort', targetWorkerId: 'r4-pad-v1' })
     q.enqueue({ commandType: 'AcceptProposal' })
+    q.enqueue({ commandType: 'SelectWinner', workerId: 'r4-pad-v2' })
 
     await expect(runPromise).resolves.toMatchObject({
       status: 'done',
       laneBranch: 'lane/r4/pad',
+      reasoning: 'user override',
     })
 
     const sqlite = getSQLite(db)
-    expect(sqlite.prepare('SELECT state FROM tasks WHERE id=?').get('r4-pad-v2')).toEqual({ state: 'stop_failed' })
+    expect(sqlite.prepare('SELECT state FROM tasks WHERE id=?').get('r4-pad-v1')).toEqual({ state: 'cancelled' })
     expect(sqlite.prepare(`
-      SELECT event_type AS eventType
-      FROM event_log
-      WHERE entity_id=?
-      ORDER BY id ASC
-    `).all('r4-pad-v2').map((row: any) => row.eventType)).toContain('WorkerStopFailed')
+      SELECT selected_winner_worker_id AS selectedWinnerWorkerId, selection_source AS selectionSource
+      FROM merge_candidates
+      WHERE id=?
+    `).get('pad-lead')).toEqual({
+      selectedWinnerWorkerId: 'r4-pad-v2',
+      selectionSource: 'user_override',
+    })
   })
 })

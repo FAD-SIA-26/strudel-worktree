@@ -105,13 +105,16 @@ export class LeadStateMachine {
   ): Promise<{ selectedWinnerWorkerId: string; selectionSource: 'proposal_accept' | 'user_override' }> {
     let selectedWinnerWorkerId: string | null = null
     let selectionSource: 'proposal_accept' | 'user_override' = 'proposal_accept'
+    const isSelectableWorker = (workerId: string): boolean =>
+      doneWorkers.some(worker => worker.workerId === workerId)
+      && workers.find(worker => worker.id === workerId)?.state === 'done'
 
     while (!selectedWinnerWorkerId) {
       const cmd = await this.cfg.commandQueue.dequeue()
-      if (cmd.commandType === 'AcceptProposal') {
+      if (cmd.commandType === 'AcceptProposal' && isSelectableWorker(proposedWinnerWorkerId)) {
         selectedWinnerWorkerId = proposedWinnerWorkerId
         selectionSource = 'proposal_accept'
-      } else if (cmd.commandType === 'SelectWinner' && doneWorkers.some(worker => worker.workerId === cmd.workerId)) {
+      } else if (cmd.commandType === 'SelectWinner' && isSelectableWorker(cmd.workerId)) {
         selectedWinnerWorkerId = cmd.workerId
         selectionSource = cmd.workerId === proposedWinnerWorkerId ? 'proposal_accept' : 'user_override'
       } else if (cmd.commandType === 'Abort') {
@@ -238,12 +241,6 @@ export class LeadStateMachine {
       this.emit('LeadFailed', { reason: `selected worker ${selectedWinnerWorkerId} is not complete` })
       return { status: 'failed', laneBranch: '', reasoning: 'selected worker not complete' }
     }
-
-    await Promise.all(
-      workers
-        .filter(w => w.id !== winner.workerId)
-        .map(w => w.abort().catch(() => undefined))
-    )
 
     await this.ensureLaneBranchWorktree()
     this.emit('LaneMergeStarted', { laneBranch: this.laneBranch, selectedWinnerWorkerId })

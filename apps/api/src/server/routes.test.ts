@@ -194,6 +194,23 @@ describe('routes', () => {
     expect(leadQ.size).toBe(0)
   })
 
+  it('POST /api/drop rejects terminal workers', async () => {
+    const db = createTestDb()
+    const leadQ = new CommandQueue<any>()
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'melody-v1', 'worker', 'melody-lead', 'done')
+    const app = createApp({ db, leadQueues: new Map([['melody-lead', leadQ]]) })
+
+    const res = await request(app).post('/api/drop').send({
+      leadId: 'melody-lead',
+      workerId: 'melody-v1',
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.body).toEqual({ error: 'worker melody-v1 is already terminal' })
+    expect(leadQ.size).toBe(0)
+  })
+
   it('POST /api/preview/launch returns a solo preview artifact', async () => {
     const db = createTestDb()
     const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-route-preview-'))
@@ -251,6 +268,26 @@ describe('routes', () => {
 
     expect(res.status).toBe(409)
     expect(res.body).toEqual({ error: 'final preview unavailable: missing src/index.js' })
+  })
+
+  it('POST /api/preview/final reuses the persisted final preview artifact when present', async () => {
+    const db = createTestDb()
+    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-route-preview-existing-'))
+    upsertWorktree(db, 'run-r1', 'run-r1', worktreePath, 'run/r1', 'main')
+    getSQLite(db).prepare(`
+      INSERT INTO previews(worker_id, mode, preview_url, generated_code, source_files, context_winner_ids, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('run:r1:final', 'solo', 'https://strudel.cc/#existing', 'stack(sound("bd"))', '["src/index.js"]', '[]', Date.now())
+    const app = createApp({ db, leadQueues: new Map() })
+
+    const res = await request(app).post('/api/preview/final').send({})
+
+    expect(res.status).toBe(202)
+    expect(res.body).toMatchObject({
+      workerId: 'run:r1:final',
+      mode: 'solo',
+      previewUrl: 'https://strudel.cc/#existing',
+    })
   })
 
   it('GET /api/orchestration returns proposed/selected state plus review-ready fields', async () => {
@@ -332,6 +369,25 @@ describe('routes', () => {
       canBeSelected: false,
       isStopping: false,
     })
+  })
+
+  it('GET /api/orchestration only advertises final preview availability when launchable', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+    const now = Date.now()
+    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-run-state-'))
+
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('mastermind', 'mastermind', null, 'review_ready', now, now)
+    upsertWorktree(db, 'run-r3', 'run-r3', worktreePath, 'run/r3', 'main')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runId).toBe('r3')
+    expect(res.body.reviewReady).toBe(true)
+    expect(res.body.fullSongPreviewAvailable).toBe(false)
   })
 
   it('GET /api/orchestration reflects awaiting approval state from persisted tasks', async () => {
