@@ -17,6 +17,7 @@ export function WorkerCard({ worker, selected, onSelect }: {
   onSelect: (id: string) => void
 }) {
   const cfg = STATE_CFG[worker.state] ?? { dot: 'bg-gray-500', text: 'text-gray-500' }
+  const soloPreview = worker.previewArtifacts.find(p => p.mode === 'solo')
   return (
     <button
       onClick={() => onSelect(worker.id)}
@@ -28,14 +29,14 @@ export function WorkerCard({ worker, selected, onSelect }: {
     >
       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
       <span className="font-mono text-[11px] text-gray-300 truncate flex-1 min-w-0">{worker.id}</span>
-      {worker.previewUrl && (
+      {soloPreview && (
         <a
-          href={worker.previewUrl}
+          href={soloPreview.previewUrl}
           target="_blank"
           rel="noreferrer"
           onClick={e => e.stopPropagation()}
           className="ml-auto text-[9px] text-blue-500 hover:text-blue-400 flex-shrink-0 transition-colors"
-          title="Open preview"
+          title="Open solo preview"
         >↗</a>
       )}
     </button>

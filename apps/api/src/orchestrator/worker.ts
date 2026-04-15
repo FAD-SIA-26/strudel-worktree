@@ -9,7 +9,7 @@ import { ConcurrencyGovernor } from './concurrency'
 import type { OrcEvent } from '@orc/types'
 import { getOrcPaths } from '../runtime/paths'
 
-export type WorkerState = 'queued'|'spawning'|'running'|'stalled'|'zombie'|'done'|'failed'|'retrying'|'cancelled'
+export type WorkerState = 'queued'|'spawning'|'running'|'stopping'|'stop_failed'|'stalled'|'zombie'|'done'|'failed'|'retrying'|'cancelled'
 
 interface WorkerConfig {
   id:           string
@@ -133,8 +133,17 @@ export class WorkerStateMachine {
 
   async abort(): Promise<void> {
     if (this.slotHeld) { this.cfg.governor.release(); this.slotHeld = false }
-    this.state = 'cancelled'
-    await this.agent?.abort()
-    this.emit('WorkerFailed', { error: 'aborted', retryable: false })
+    this.state = 'stopping'
+    this.emit('WorkerStopping', { reason: 'lead selected another winner' })
+    try {
+      await this.agent?.abort()
+      this.state = 'cancelled'
+      this.emit('WorkerFailed', { error: 'aborted', retryable: false })
+    } catch (error: unknown) {
+      this.state = 'stop_failed'
+      this.emit('WorkerStopFailed', {
+        reason: error instanceof Error ? error.message : 'abort failed',
+      })
+    }
   }
 }

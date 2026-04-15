@@ -20,16 +20,59 @@ export function getWorktrees(db: Db) {
       branch,
       base_branch AS baseBranch
     FROM worktrees
+    ORDER BY rowid DESC
   `).all() as Array<{ id: string; workerId: string; path: string; branch: string; baseBranch: string }>
 }
 export function getPreviews(db: Db) {
   return getSQLite(db).prepare(`
     SELECT
-      worktree_id AS worktreeId,
-      preview_url AS previewUrl
+      worker_id AS workerId,
+      mode,
+      preview_url AS previewUrl,
+      generated_code AS generatedCode,
+      source_files AS sourceFiles,
+      context_winner_ids AS contextWinnerIds,
+      generated_at AS generatedAt
     FROM previews
-    WHERE status='active'
-  `).all() as Array<{ worktreeId: string; previewUrl: string }>
+  `).all() as Array<{
+    workerId: string
+    mode: 'solo' | 'contextual'
+    previewUrl: string
+    generatedCode: string
+    sourceFiles: string
+    contextWinnerIds: string
+    generatedAt: number
+  }>
+}
+
+export function getMergeCandidates(db: Db) {
+  return getSQLite(db).prepare(`
+    SELECT
+      lead_id AS leadId,
+      proposed_winner_worker_id AS proposedWinnerWorkerId,
+      selected_winner_worker_id AS selectedWinnerWorkerId,
+      selection_source AS selectionSource
+    FROM merge_candidates
+  `).all() as Array<{
+    leadId: string
+    proposedWinnerWorkerId: string | null
+    selectedWinnerWorkerId: string | null
+    selectionSource: 'proposal_accept' | 'user_override'
+  }>
+}
+
+export function getTaskEdges(db: Db) {
+  return getSQLite(db).prepare(`
+    SELECT
+      parent_id AS parentId,
+      child_id AS childId,
+      edge_type AS edgeType
+    FROM task_edges
+  `).all() as Array<{
+    parentId: string
+    childId: string
+    edgeType: string
+  }>
 }
 export function upsertTask(db: Db, id: string, type: string, parentId: string|null, state: string): void {
   const now = Date.now()

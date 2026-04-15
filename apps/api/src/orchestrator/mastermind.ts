@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
-import type { Db } from '../db/client'
+import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import { upsertTask } from '../db/queries'
 import { createRunPlan } from '../git/planFiles'
@@ -31,7 +31,14 @@ interface MastermindConfig {
   maxConcurrentWorkers?: number
 }
 
-export type MastermindState = 'idle'|'planning'|'delegating'|'monitoring'|'merging'|'done'|'failed'
+export type MastermindState =
+  | 'idle'
+  | 'planning'
+  | 'delegating'
+  | 'monitoring'
+  | 'merging_lanes'
+  | 'review_ready'
+  | 'failed'
 
 export class MastermindStateMachine {
   state: MastermindState = 'idle'
@@ -51,7 +58,7 @@ export class MastermindStateMachine {
     })
   }
 
-  async run(opts: { userGoal: string }): Promise<{ status: 'done'|'failed'; runBranch: string }> {
+  async run(opts: { userGoal: string }): Promise<{ status: 'review_ready'|'failed'; runBranch: string }> {
     if (this.cfg.maxConcurrentWorkers) configureGovernor(this.cfg.maxConcurrentWorkers)
 
     this.state = 'planning'
@@ -84,6 +91,16 @@ export class MastermindStateMachine {
       userGoal: opts.userGoal, sections: sections.map(s => s.id),
     }).catch(() => '')
 
+    const sqlite = getSQLite(this.cfg.db)
+    for (const section of sections) {
+      for (const dep of section.dependsOn) {
+        sqlite.prepare(`
+          INSERT INTO task_edges(parent_id, child_id, edge_type)
+          VALUES(?, ?, ?)
+        `).run(`${dep}-lead`, `${section.id}-lead`, 'depends_on')
+      }
+    }
+
     const runBranch = `run/${this.cfg.runId}`
     // Create the run branch without switching the main working tree
     await createBranch(this.cfg.repoRoot, runBranch).catch(err => {
@@ -101,7 +118,7 @@ export class MastermindStateMachine {
     this.emit('PlanReady', { sections: sections.map(s => s.id), runId: this.cfg.runId })
     this.state = 'delegating'
 
-    const sectionResults = new Map<string, { status: 'done'|'failed'; winnerBranch: string }>()
+    const sectionResults = new Map<string, { status: 'done'|'failed'; laneBranch: string }>()
     const resolved = new Set<string>()
     const failed = new Set<string>()
     const remaining = [...sections]
@@ -113,7 +130,7 @@ export class MastermindStateMachine {
         const blockedByFailure = remaining.filter(s => s.dependsOn.some(d => failed.has(d)))
         if (blockedByFailure.length > 0) {
           for (const s of blockedByFailure) {
-            sectionResults.set(s.id, { status: 'failed', winnerBranch: '' })
+            sectionResults.set(s.id, { status: 'failed', laneBranch: '' })
             failed.add(s.id)
             remaining.splice(remaining.indexOf(s), 1)
           }
@@ -140,14 +157,18 @@ export class MastermindStateMachine {
             agentFactory: this.cfg.agentFactory, llmCall: this.cfg.llmCall,
             commandQueue: leadCommandQueue, runPlanPath,
           })
-          return lead.run().then(r => ({ section, result: r }))
+          return lead.run()
+            .then(result => ({ section, result }))
+            .finally(() => {
+              this.cfg.leadQueues?.delete(leadId)
+            })
         })
       )
 
       for (const r of batchResults) {
         if (r.status === 'fulfilled') {
           const { section, result } = r.value
-          sectionResults.set(section.id, { status: result.status, winnerBranch: result.winnerBranch })
+          sectionResults.set(section.id, { status: result.status, laneBranch: result.laneBranch })
           if (result.status === 'done') { resolved.add(section.id) }
           else { failed.add(section.id) }
         } else {
@@ -165,7 +186,7 @@ export class MastermindStateMachine {
       return { status: 'failed', runBranch }
     }
 
-    this.state = 'merging'
+    this.state = 'merging_lanes'
     // Merges happen in the dedicated run worktree — the main worktree is never affected
     const doMerge = this.cfg.doMerge ?? ((_target, source) => mergeBranch(runWtPath, source))
     const mergeConflicts: string[] = []
@@ -177,11 +198,11 @@ export class MastermindStateMachine {
     })
 
     for (const [sectionId, result] of sectionResults) {
-      if (result.status === 'done' && result.winnerBranch) {
+      if (result.status === 'done' && result.laneBranch) {
         mc.enqueue({
           leadId: `${sectionId}-lead`,
-          worktreeId: result.winnerBranch.replace('feat/', ''),
-          winnerBranch: result.winnerBranch,
+          worktreeId: sectionId,
+          sourceBranch: result.laneBranch,
           targetBranch: `run/${this.cfg.runId}`,
         })
       }
@@ -198,8 +219,8 @@ export class MastermindStateMachine {
       return { status: 'failed', runBranch }
     }
 
-    this.state = 'done'
+    this.state = 'review_ready'
     this.emit('OrchestrationComplete', { runBranch })
-    return { status: 'done', runBranch }
+    return { status: 'review_ready', runBranch }
   }
 }

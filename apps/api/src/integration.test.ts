@@ -4,6 +4,7 @@ import { createTestDb } from './db/client'
 import { ConcurrencyGovernor } from './orchestrator/concurrency'
 import { MockAgent } from './agents/mock'
 import { MastermindStateMachine } from './orchestrator/mastermind'
+import { CommandQueue } from './events/commandQueues'
 import { eventBus } from './events/eventBus'
 
 let repoDir: string
@@ -14,6 +15,7 @@ describe('Full orchestration (MockAgent)', () => {
     repoDir = initTestRepo('integration')
     const db  = createTestDb()
     const gov = new ConcurrencyGovernor(4)
+    const leadQueues = new Map<string, CommandQueue<any>>()
     const emitted: string[] = []
     const leadDoneOrder: string[] = []
     const handler = (e: any) => {
@@ -24,6 +26,7 @@ describe('Full orchestration (MockAgent)', () => {
 
     const m = new MastermindStateMachine({
       repoRoot: repoDir, db, governor: gov, runId: 'int-run', baseBranch: 'main',
+      leadQueues,
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async p => {
         if (p.includes('Decompose')) return JSON.stringify([
@@ -39,12 +42,20 @@ describe('Full orchestration (MockAgent)', () => {
       },
     })
 
+    const autoApprove = setInterval(() => {
+      for (const q of leadQueues.values()) {
+        if (q.size === 0) q.enqueue({ commandType: 'AcceptProposal' })
+      }
+    }, 10)
+
     const result = await m.run({ userGoal: 'Build lo-fi track' })
+    clearInterval(autoApprove)
     eventBus.off('event', handler)
 
-    expect(result.status).toBe('done')
+    expect(result.status).toBe('review_ready')
     expect(emitted).toContain('WorkerDone')
-    expect(emitted).toContain('ReviewComplete')
+    expect(emitted).toContain('WinnerProposed')
+    expect(emitted).toContain('WinnerSelected')
     expect(emitted).toContain('OrchestrationComplete')
     expect(leadDoneOrder.at(-1)).toBe('arrangement')
     expect(leadDoneOrder.indexOf('chords')).toBeGreaterThan(leadDoneOrder.indexOf('bass'))

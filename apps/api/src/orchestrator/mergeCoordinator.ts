@@ -2,7 +2,7 @@ import { getSQLite, type Db } from '../db/client'
 import { writeEvent, nextSeq } from '../db/journal'
 import type { OrcEvent } from '@orc/types'
 
-interface MergeReq { leadId: string; worktreeId: string; winnerBranch: string; targetBranch: string }
+interface MergeReq { leadId: string; worktreeId: string; sourceBranch: string; targetBranch: string }
 interface MergeCoordinatorConfig {
   db:          Db
   repoRoot:    string
@@ -34,7 +34,7 @@ export class MergeCoordinator {
     sqlite.prepare("UPDATE merge_queue SET status='merging' WHERE lead_id=? AND winner_worktree_id=? AND status='pending'")
           .run(req.leadId, req.worktreeId)
     try {
-      const r = await this.cfg.doMerge(req.targetBranch, req.winnerBranch)
+      const r = await this.cfg.doMerge(req.targetBranch, req.sourceBranch)
       if (r.success) {
         sqlite.prepare("UPDATE merge_queue SET status='done', merged_at=? WHERE lead_id=? AND winner_worktree_id=?").run(Date.now(), req.leadId, req.worktreeId)
         writeEvent(this.cfg.db, { entityId: 'mastermind', entityType: 'mastermind', eventType: 'MergeComplete',

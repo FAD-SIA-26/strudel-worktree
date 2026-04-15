@@ -21,6 +21,12 @@ export const LeadPlanReadySchema   = base.extend({ eventType: z.literal('LeadPla
 export const ReviewCompleteSchema  = base.extend({ eventType: z.literal('ReviewComplete'),  payload: z.object({ winnerId: z.string(), reasoning: z.string() }) })
 export const LeadDoneSchema        = base.extend({ eventType: z.literal('LeadDone'),        payload: z.object({ branch: z.string(), sectionId: z.string() }) })
 export const LeadFailedSchema      = base.extend({ eventType: z.literal('LeadFailed'),      payload: z.object({ reason: z.string() }) })
+export const WinnerProposedSchema  = base.extend({ eventType: z.literal('WinnerProposed'),  payload: z.object({ proposedWinnerId: z.string(), reasoning: z.string() }) })
+export const WinnerSelectedSchema  = base.extend({ eventType: z.literal('WinnerSelected'),  payload: z.object({ selectedWinnerId: z.string(), selectionSource: z.enum(['proposal_accept', 'user_override']) }) })
+export const WorkerStoppingSchema  = base.extend({ eventType: z.literal('WorkerStopping'),  payload: z.object({ reason: z.string() }) })
+export const WorkerStopFailedSchema = base.extend({ eventType: z.literal('WorkerStopFailed'), payload: z.object({ reason: z.string() }) })
+export const LaneMergeStartedSchema = base.extend({ eventType: z.literal('LaneMergeStarted'), payload: z.object({ laneBranch: z.string(), selectedWinnerWorkerId: z.string() }) })
+export const LaneMergeCompletedSchema = base.extend({ eventType: z.literal('LaneMergeCompleted'), payload: z.object({ laneBranch: z.string(), selectedWinnerWorkerId: z.string() }) })
 export const MergeRequestedSchema  = base.extend({ eventType: z.literal('MergeRequested'), payload: z.object({ leadId: z.string(), worktreeId: z.string(), targetBranch: z.string() }) })
 export const MergeConflictSchema   = base.extend({ eventType: z.literal('MergeConflict'),  payload: z.object({ mergeId: z.string(), conflictFiles: z.array(z.string()) }) })
 export const MergeCompleteSchema   = base.extend({ eventType: z.literal('MergeComplete'),  payload: z.object({ mergeId: z.string(), targetBranch: z.string() }) })
@@ -34,6 +40,8 @@ export const OrcEventSchema = z.discriminatedUnion('eventType', [
   WorkerProgressSchema, WorkerDoneSchema, WorkerFailedSchema,
   WorkerStalledSchema, WorkerZombieSchema, WorkerRecoveredSchema,
   LeadPlanReadySchema, ReviewCompleteSchema, LeadDoneSchema, LeadFailedSchema,
+  WinnerProposedSchema, WinnerSelectedSchema, WorkerStoppingSchema, WorkerStopFailedSchema,
+  LaneMergeStartedSchema, LaneMergeCompletedSchema,
   MergeRequestedSchema, MergeConflictSchema, MergeCompleteSchema,
   PlanReadySchema, LeadDelegatedSchema, CommandIssuedSchema,
   OrchCompleteSchema, OrchFailedSchema,
