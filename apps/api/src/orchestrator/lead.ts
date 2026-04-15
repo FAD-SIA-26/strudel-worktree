@@ -5,6 +5,7 @@ import { nextSeq, writeEvent } from "../db/journal";
 import { upsertTask } from "../db/queries";
 import type { CommandQueue } from "../events/commandQueues";
 import { createLeadPlan } from "../git/planFiles";
+import { inferRequiredSkillsForPrompt } from "./strudel";
 import type { ConcurrencyGovernor } from "./concurrency";
 import { ContextManager } from "./context";
 import { WorkerStateMachine } from "./worker";
@@ -136,6 +137,9 @@ export class LeadStateMachine {
         prompt: workerPrompts[i],
         maxRetries: this.cfg.maxRetries ?? 1,
         errorHistory: [],
+        requiredSkills: inferRequiredSkillsForPrompt(
+          `${this.cfg.sectionGoal}\n${workerPrompts[i]}`,
+        ),
       }),
     );
 

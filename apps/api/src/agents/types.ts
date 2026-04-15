@@ -1,9 +1,12 @@
+export type WorkerSkill = "strudel";
+
 export interface WorkerTask {
   id: string;
   prompt: string;
   maxRetries: number;
   strategy?: string;
   errorHistory: string[];
+  requiredSkills?: WorkerSkill[];
 }
 export interface WorkerHeartbeat {
   ts?: number;

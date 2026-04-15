@@ -92,7 +92,8 @@ describe("CodexCLIAdapter", () => {
     });
 
     const result = await runPromise;
-    const prompt = spawnMock.mock.calls[0]?.[1]?.[3];
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    const prompt = args[args.length - 1];
 
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",
@@ -235,5 +236,51 @@ describe("CodexCLIAdapter", () => {
         "exit code 1: Reading additional input from stdin...\nYou hit a usage limit.",
       retryable: true,
     });
+  });
+
+  it("enables required skills and instructs the worker to invoke them explicitly", async () => {
+    const proc = makeProc();
+    spawnMock.mockReturnValue(proc);
+    getWorktreeDiffMock.mockResolvedValue("+ diff");
+    writeDoneMarkerMock.mockResolvedValue(undefined);
+    openMock.mockResolvedValue({
+      write: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const runPromise = new CodexCLIAdapter().run(
+      {
+        id: "w4",
+        prompt: "Write a Strudel.js bass line",
+        maxRetries: 1,
+        errorHistory: [],
+        requiredSkills: ["strudel"],
+      },
+      {
+        worktreePath: path.join(os.tmpdir(), `orc-codex-cli-${Date.now()}`),
+        branch: "feat/w4",
+        baseBranch: "main",
+        entityId: "w4",
+        planPath: "worker-plan.md",
+        leadPlanPath: "lead-plan.md",
+        runPlanPath: "run-plan.md",
+      },
+    );
+
+    setImmediate(() => {
+      proc.emit("close", 0);
+    });
+
+    await runPromise;
+
+    const args = spawnMock.mock.calls[0]?.[1] as string[];
+    const prompt = args[args.length - 1];
+
+    expect(args).toContain("-c");
+    expect(args).toContain(
+      'skills.config=[{ path = "/home/cle/.codex/skills/strudel", enabled = true }]',
+    );
+    expect(prompt).toContain("Required skills: strudel");
+    expect(prompt).toContain("You must explicitly invoke $strudel");
   });
 });

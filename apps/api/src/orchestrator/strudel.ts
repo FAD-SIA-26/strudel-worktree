@@ -18,6 +18,10 @@ export interface StrudelContract {
   sectionId: string;
 }
 
+export function inferRequiredSkillsForPrompt(prompt: string): Array<"strudel"> {
+  return isStrudelGoal(prompt) ? ["strudel"] : [];
+}
+
 interface ExampleReference {
   genre: StrudelGenre;
   path: string;

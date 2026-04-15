@@ -1,6 +1,12 @@
 import * as fs from "node:fs/promises";
 import { afterAll, describe, expect, it } from "vitest";
 import { MockAgent } from "../agents/mock";
+import type {
+  WorkerAgent,
+  WorkerContext,
+  WorkerResult,
+  WorkerTask,
+} from "../agents/types";
 import { createTestDb } from "../db/client";
 import { CommandQueue } from "../events/commandQueues";
 import { cleanupTestRepo, initTestRepo } from "../test-helpers/initTestRepo";
@@ -73,5 +79,58 @@ describe("LeadStateMachine", () => {
     expect(leadPlan).toContain("Create a file with exactly one line: hello");
     expect(leadPlan).not.toContain("(variation 1)");
     expect(leadPlan).not.toContain("(variation 2)");
+  }, 30_000);
+
+  it("marks Strudel workers as requiring the strudel skill", async () => {
+    repoDir = initTestRepo("lead-strudel-skill-test");
+    const db = createTestDb();
+    const gov = new ConcurrencyGovernor(4);
+    const seenRequiredSkills: string[][] = [];
+
+    class CapturingAgent implements WorkerAgent {
+      async run(task: WorkerTask, ctx: WorkerContext): Promise<WorkerResult> {
+        seenRequiredSkills.push(task.requiredSkills ?? []);
+        await fs.writeFile(`${ctx.worktreePath}/RESULT.txt`, "done\n");
+        return {
+          status: "done",
+          branch: ctx.branch,
+          diff: "",
+          retryable: false,
+        };
+      }
+      async abort(): Promise<void> {}
+    }
+
+    const lead = new LeadStateMachine({
+      id: "melody-lead",
+      sectionId: "melody",
+      sectionGoal:
+        "Write a Strudel.js lead melody. Output to src/melody.js ONLY.",
+      numWorkers: 1,
+      baseBranch: "main",
+      runBranch: "run/r3",
+      runId: "r3",
+      repoRoot: repoDir,
+      db,
+      governor: gov,
+      commandQueue: new CommandQueue(),
+      agentFactory: () => new CapturingAgent(),
+      llmCall: async (p) => {
+        if (p.includes("Generate")) {
+          return JSON.stringify([
+            "Write a Strudel.js lead melody. Output to src/melody.js ONLY.",
+          ]);
+        }
+        return JSON.stringify({
+          winnerId: "r3-melody-v1",
+          reasoning: "only worker",
+        });
+      },
+    });
+
+    const result = await lead.run();
+
+    expect(result.status).toBe("done");
+    expect(seenRequiredSkills).toEqual([["strudel"]]);
   }, 30_000);
 });

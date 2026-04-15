@@ -25,6 +25,10 @@ For targeted work, use package-local commands such as `cd apps/api && pnpm dev`,
 ## Coding Style & Naming Conventions
 Code is TypeScript-first. Biome enforces formatting and linting; use 2-space indentation and keep imports organized. Follow existing naming patterns: React components in PascalCase (`WorkerCard.tsx`), utilities and modules in camelCase or lowercase (`worktree.ts`, `wsHandler.ts`), and tests as `*.test.ts` beside the code they cover.
 
+## Skill Enforcement
+When a worker task prompt includes a `Required skills:` line, the agent must explicitly invoke those skills before taking any other action.
+For any Strudel or Strudel.js composition, debugging, or preview-safe music-generation task, the required skill is `strudel`.
+
 ## Testing Guidelines
 Vitest is the test runner across the repo. API tests live under `apps/api/src/**/*.test.ts`; shared schema tests live beside source in `packages/types/src/`. Web test support exists through Vitest as well, but dashboard coverage is still light, so UI changes should be verified with at least a local `next build` and targeted manual or browser-based checks. Add or update tests for every behavior change, especially orchestration flow, git/worktree logic, preview generation, and HTTP routes. Run `pnpm test` before opening a PR; use `cd apps/api && pnpm test` for faster iteration.
 

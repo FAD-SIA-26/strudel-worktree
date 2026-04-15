@@ -7,8 +7,24 @@ import type {
   WorkerAgent,
   WorkerContext,
   WorkerResult,
+  WorkerSkill,
   WorkerTask,
 } from "./types";
+
+const SKILL_PATHS: Record<WorkerSkill, string> = {
+  strudel: "/home/cle/.codex/skills/strudel",
+};
+
+function buildSkillConfigArgs(requiredSkills: WorkerSkill[]): string[] {
+  if (requiredSkills.length === 0) return [];
+  const skillsConfig = requiredSkills
+    .map(
+      (skill) =>
+        `{ path = "${SKILL_PATHS[skill].replaceAll('"', '\\"')}", enabled = true }`,
+    )
+    .join(", ");
+  return ["-c", `skills.config=[${skillsConfig}]`];
+}
 
 export class CodexCLIAdapter implements WorkerAgent {
   private proc: ReturnType<typeof spawn> | null = null;
@@ -27,6 +43,7 @@ export class CodexCLIAdapter implements WorkerAgent {
       ".orc-session.jsonl",
     );
     const session = await fs.open(sessionPath, "a");
+    const requiredSkills = Array.from(new Set(task.requiredSkills ?? []));
     const prompt = [
       "You are an ORC worker subagent running unattended inside a git worktree.",
       "Execute the assigned implementation task directly.",
@@ -38,6 +55,13 @@ export class CodexCLIAdapter implements WorkerAgent {
       "Inside a worktree, prefer package-local binaries like ./apps/web/node_modules/.bin/next or ./apps/api/node_modules/.bin/vitest instead of workspace package-manager commands.",
       "Read the provided plan files, make the code changes, validate them, and finish autonomously.",
       "Update .orc/worker-plan.md before finishing.",
+      requiredSkills.length
+        ? `Required skills: ${requiredSkills.join(", ")}`
+        : "",
+      ...requiredSkills.map(
+        (skill) =>
+          `You must explicitly invoke $${skill} before doing any work on this task.`,
+      ),
       "",
       `Task: ${task.prompt}`,
       task.strategy ? `Approach: ${task.strategy}` : "",
@@ -58,6 +82,7 @@ export class CodexCLIAdapter implements WorkerAgent {
           "exec",
           "--json",
           "--dangerously-bypass-approvals-and-sandbox",
+          ...buildSkillConfigArgs(requiredSkills),
           prompt,
         ],
         {
