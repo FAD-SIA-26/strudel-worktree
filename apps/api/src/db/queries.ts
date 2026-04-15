@@ -20,6 +20,7 @@ export function getWorktrees(db: Db) {
       branch,
       base_branch AS baseBranch
     FROM worktrees
+    ORDER BY rowid DESC
   `).all() as Array<{ id: string; workerId: string; path: string; branch: string; baseBranch: string }>
 }
 export function getPreviews(db: Db) {

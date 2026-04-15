@@ -102,13 +102,12 @@ export class LeadStateMachine {
     workers: WorkerStateMachine[],
     doneWorkers: CompletedWorker[],
     proposedWinnerWorkerId: string,
-    preQueuedCommands: OrcCommand[],
   ): Promise<{ selectedWinnerWorkerId: string; selectionSource: 'proposal_accept' | 'user_override' }> {
     let selectedWinnerWorkerId: string | null = null
     let selectionSource: 'proposal_accept' | 'user_override' = 'proposal_accept'
 
     while (!selectedWinnerWorkerId) {
-      const cmd = preQueuedCommands.shift() ?? await this.cfg.commandQueue.dequeue()
+      const cmd = await this.cfg.commandQueue.dequeue()
       if (cmd.commandType === 'AcceptProposal') {
         selectedWinnerWorkerId = proposedWinnerWorkerId
         selectionSource = 'proposal_accept'
@@ -167,16 +166,12 @@ export class LeadStateMachine {
       w.run({ id: w.id, prompt: workerPrompts[i], maxRetries: this.cfg.maxRetries ?? 1, errorHistory: [] })
     )
 
-    const preQueuedCommands: OrcCommand[] = []
     const drainCommandsOnce = async (): Promise<void> => {
       while (this.cfg.commandQueue.size > 0) {
         const cmd = await this.cfg.commandQueue.dequeue()
-        if (cmd.commandType === 'Abort') {
-          const worker = workers.find(candidate => candidate.id === cmd.targetWorkerId)
-          if (worker) await worker.abort()
-          continue
-        }
-        preQueuedCommands.push(cmd)
+        if (cmd.commandType !== 'Abort') continue
+        const worker = workers.find(candidate => candidate.id === cmd.targetWorkerId)
+        if (worker) await worker.abort()
       }
     }
     const commandPollInterval = setInterval(() => {
@@ -224,19 +219,18 @@ export class LeadStateMachine {
       return { status: 'failed', laneBranch: '', reasoning: 'reviewer failed' }
     }
 
+    this.state = 'awaiting_user_approval'
     this.persistProposal(proposedWinnerWorkerId, reasoning)
     this.emit('WinnerProposed', { proposedWinnerId: proposedWinnerWorkerId, reasoning })
-    this.state = 'awaiting_user_approval'
 
     const { selectedWinnerWorkerId, selectionSource } = await this.waitForUserSelection(
       workers,
       done,
       proposedWinnerWorkerId,
-      preQueuedCommands,
     )
     this.persistSelection(selectedWinnerWorkerId, selectionSource)
-    this.emit('WinnerSelected', { selectedWinnerId: selectedWinnerWorkerId, selectionSource })
     this.state = 'merging_lane'
+    this.emit('WinnerSelected', { selectedWinnerId: selectedWinnerWorkerId, selectionSource })
 
     const winner = done.find(worker => worker.workerId === selectedWinnerWorkerId)
     if (!winner) {

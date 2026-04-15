@@ -77,6 +77,7 @@ export function DetailPanel({ selectedId, sections }: {
   const headerSoloPreview = worker ? previewFor(worker, 'solo') : null
   const proposedWorker = getProposedWorker(section)
   const selectedWorker = getSelectedWorker(section)
+  const canChooseWinner = Boolean(leadId && leadSection?.awaitingUserApproval)
 
   async function approveProposal(targetLeadId: string) {
     setPendingWinnerId(proposedWorker?.id ?? null)
@@ -154,7 +155,7 @@ export function DetailPanel({ selectedId, sections }: {
         </div>
 
         <div className="flex gap-1.5 flex-shrink-0">
-          {worker?.canBeSelected && leadId && (
+          {worker?.canBeSelected && canChooseWinner && leadId && (
             <button
               onClick={() => pickWinner(worker.id, leadId)}
               className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
@@ -346,7 +347,7 @@ export function DetailPanel({ selectedId, sections }: {
                           ↻ Refresh context
                         </button>
                       )}
-                      {w.canBeSelected && leadId && (
+                      {w.canBeSelected && canChooseWinner && leadId && (
                         <button
                           onClick={() => pickWinner(w.id, leadId)}
                           className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"

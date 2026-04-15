@@ -47,6 +47,9 @@ describe('LeadStateMachine', () => {
       proposedWinnerWorkerId: 'r1-rhythm-v1',
       selectedWinnerWorkerId: null,
     })
+    expect(sqlite.prepare('SELECT state FROM tasks WHERE id=?').get('rhythm-lead')).toEqual({
+      state: 'awaiting_user_approval',
+    })
 
     let settled = false
     void runPromise.then(() => { settled = true })
@@ -188,17 +191,12 @@ describe('LeadStateMachine', () => {
     const q = new CommandQueue<any>()
 
     class StopFailingAgent extends MockAgent {
-      constructor(private readonly workerId: string) {
-        super({ delayMs: 5, outcome: 'done' })
-      }
+      constructor() { super({ delayMs: 5, outcome: 'done' }) }
 
       override async abort(): Promise<void> {
-        if (this.workerId.endsWith('-v2')) throw new Error('abort transport unavailable')
-        await super.abort()
+        throw new Error('abort transport unavailable')
       }
     }
-
-    let nextIndex = 0
     const lead = new LeadStateMachine({
       id: 'pad-lead',
       sectionId: 'pad',
@@ -211,10 +209,7 @@ describe('LeadStateMachine', () => {
       db,
       governor: gov,
       commandQueue: q,
-      agentFactory: () => {
-        nextIndex += 1
-        return new StopFailingAgent(`r4-pad-v${nextIndex}`)
-      },
+      agentFactory: () => new StopFailingAgent(),
       llmCall: async p => {
         if (p.includes('Generate')) return JSON.stringify(['variation 1', 'variation 2'])
         return JSON.stringify({ winnerId: 'r4-pad-v1', reasoning: 'v1 is best' })

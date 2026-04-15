@@ -46,6 +46,7 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
         workers: tasks.filter(t => t.type === 'worker' && t.parentId === lead.id).map(worker => {
           const wt = worktreeByWorker.get(worker.id)
           const previewArtifacts = previewsByWorker.get(worker.id) ?? []
+          const awaitingUserApproval = lead.state === 'awaiting_user_approval'
 
           return {
             id: worker.id,
@@ -53,7 +54,7 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
             branch: wt?.branch,
             isProposed: candidate?.proposedWinnerWorkerId === worker.id,
             isSelected: selectedWinnerWorkerId === worker.id,
-            canBeSelected: worker.state === 'done' && selectedWinnerWorkerId !== worker.id,
+            canBeSelected: awaitingUserApproval && worker.state === 'done' && selectedWinnerWorkerId !== worker.id,
             isStopping: worker.state === 'stopping',
             contextAvailable: upstreamLeadIds.length > 0 && upstreamLeadIds.every(depLeadId =>
               Boolean(mergeCandidateByLead.get(depLeadId)?.selectedWinnerWorkerId)
@@ -83,10 +84,33 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
   r.post('/approve', (req, res) => {
     const { workerId, leadId } = req.body as { workerId?: string; leadId?: string }
     if (!leadId) { res.status(400).json({ error: 'leadId required' }); return }
+    const tasks = getAllTasks(db)
+    const lead = tasks.find(task => task.id === leadId && task.type === 'lead')
+    if (!lead) { res.status(404).json({ error: `lead not found for ${leadId}` }); return }
     const q = leadQueues.get(leadId)
     if (!q) { res.status(404).json({ error: `lead queue not found for ${leadId}` }); return }
-    if (workerId) q.enqueue({ commandType: 'SelectWinner', workerId })
-    else q.enqueue({ commandType: 'AcceptProposal' })
+    if (lead.state !== 'awaiting_user_approval') {
+      res.status(409).json({ error: `lead ${leadId} is not awaiting user approval` })
+      return
+    }
+
+    const candidate = getMergeCandidates(db).find(entry => entry.leadId === leadId)
+    if (!candidate?.proposedWinnerWorkerId) {
+      res.status(409).json({ error: `lead ${leadId} has no reviewer proposal` })
+      return
+    }
+
+    if (workerId) {
+      const worker = tasks.find(task => task.id === workerId && task.type === 'worker' && task.parentId === leadId)
+      const canBeSelected = worker?.state === 'done' && candidate.selectedWinnerWorkerId !== workerId
+      if (!canBeSelected) {
+        res.status(409).json({ error: `worker ${workerId} is not selectable for ${leadId}` })
+        return
+      }
+      q.enqueue({ commandType: 'SelectWinner', workerId })
+    } else {
+      q.enqueue({ commandType: 'AcceptProposal' })
+    }
     res.status(202).json({ ok: true })
   })
 
@@ -116,8 +140,14 @@ export function createRoutes({ db, leadQueues }: AppDeps): Router {
     }
 
     const runId = runWorktree.branch?.replace('run/', '') ?? 'current'
-    const artifact = await launchRunPreview(db, runId, runWorktree.path)
-    res.status(202).json(artifact)
+    try {
+      const artifact = await launchRunPreview(db, runId, runWorktree.path)
+      res.status(202).json(artifact)
+    } catch (error) {
+      res.status(409).json({
+        error: error instanceof Error ? error.message : 'final preview unavailable',
+      })
+    }
   })
 
   r.post('/preview/stop', (req, res) => {

@@ -157,7 +157,11 @@ export class MastermindStateMachine {
             agentFactory: this.cfg.agentFactory, llmCall: this.cfg.llmCall,
             commandQueue: leadCommandQueue, runPlanPath,
           })
-          return lead.run().then(r => ({ section, result: r }))
+          return lead.run()
+            .then(result => ({ section, result }))
+            .finally(() => {
+              this.cfg.leadQueues?.delete(leadId)
+            })
         })
       )
 

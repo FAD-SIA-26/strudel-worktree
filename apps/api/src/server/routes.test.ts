@@ -57,7 +57,7 @@ describe('routes', () => {
               branch: 'feat/main-v1',
               isProposed: false,
               isSelected: false,
-              canBeSelected: true,
+              canBeSelected: false,
               isStopping: false,
               contextAvailable: false,
               previewArtifacts: [
@@ -88,6 +88,18 @@ describe('routes', () => {
   it('POST /api/approve accepts a proposal without a worker id', async () => {
     const db = createTestDb()
     const leadQ = new CommandQueue<any>()
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    getSQLite(db).prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v1', null, 'lane/r1/melody', 'seed proposal', 'proposal_accept')
     const app = createApp({ db, leadQueues: new Map([['melody-lead', leadQ]]) })
 
     const res = await request(app).post('/api/approve').send({ leadId: 'melody-lead' })
@@ -99,6 +111,19 @@ describe('routes', () => {
   it('POST /api/approve selects an explicit winner when workerId is provided', async () => {
     const db = createTestDb()
     const leadQ = new CommandQueue<any>()
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'melody-v2', 'worker', 'melody-lead', 'done')
+    getSQLite(db).prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v1', null, 'lane/r1/melody', 'seed proposal', 'proposal_accept')
     const app = createApp({ db, leadQueues: new Map([['melody-lead', leadQ]]) })
 
     const res = await request(app).post('/api/approve').send({
@@ -111,6 +136,62 @@ describe('routes', () => {
       commandType: 'SelectWinner',
       workerId: 'melody-v2',
     })
+  })
+
+  it('POST /api/approve rejects selection before the lead is awaiting approval', async () => {
+    const db = createTestDb()
+    const leadQ = new CommandQueue<any>()
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'running')
+    upsertTask(db, 'melody-v2', 'worker', 'melody-lead', 'done')
+    getSQLite(db).prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v1', null, 'lane/r1/melody', 'seed proposal', 'proposal_accept')
+    const app = createApp({ db, leadQueues: new Map([['melody-lead', leadQ]]) })
+
+    const res = await request(app).post('/api/approve').send({
+      leadId: 'melody-lead',
+      workerId: 'melody-v2',
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.body).toEqual({ error: 'lead melody-lead is not awaiting user approval' })
+    expect(leadQ.size).toBe(0)
+  })
+
+  it('POST /api/approve rejects workers that are not selectable', async () => {
+    const db = createTestDb()
+    const leadQ = new CommandQueue<any>()
+    upsertTask(db, 'melody-lead', 'lead', 'mastermind', 'awaiting_user_approval')
+    upsertTask(db, 'melody-v2', 'worker', 'melody-lead', 'running')
+    getSQLite(db).prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v1', null, 'lane/r1/melody', 'seed proposal', 'proposal_accept')
+    const app = createApp({ db, leadQueues: new Map([['melody-lead', leadQ]]) })
+
+    const res = await request(app).post('/api/approve').send({
+      leadId: 'melody-lead',
+      workerId: 'melody-v2',
+    })
+
+    expect(res.status).toBe(409)
+    expect(res.body).toEqual({ error: 'worker melody-v2 is not selectable for melody-lead' })
+    expect(leadQ.size).toBe(0)
   })
 
   it('POST /api/preview/launch returns a solo preview artifact', async () => {
@@ -158,6 +239,18 @@ describe('routes', () => {
 
     expect(res.status).toBe(409)
     expect(res.body).toEqual({ error: 'final preview unavailable' })
+  })
+
+  it('POST /api/preview/final returns 409 when the run file is missing', async () => {
+    const db = createTestDb()
+    const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), 'orc-final-route-preview-missing-'))
+    upsertWorktree(db, 'run-r1', 'run-r1', worktreePath, 'run/r1', 'main')
+    const app = createApp({ db, leadQueues: new Map() })
+
+    const res = await request(app).post('/api/preview/final').send({})
+
+    expect(res.status).toBe(409)
+    expect(res.body).toEqual({ error: 'final preview unavailable: missing src/index.js' })
   })
 
   it('GET /api/orchestration returns proposed/selected state plus review-ready fields', async () => {
@@ -229,7 +322,7 @@ describe('routes', () => {
       id: 'melody-v1',
       isProposed: true,
       isSelected: false,
-      canBeSelected: true,
+      canBeSelected: false,
       isStopping: false,
     })
     expect(melodySection.workers[1]).toMatchObject({
@@ -238,6 +331,43 @@ describe('routes', () => {
       isSelected: true,
       canBeSelected: false,
       isStopping: false,
+    })
+  })
+
+  it('GET /api/orchestration reflects awaiting approval state from persisted tasks', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+    const now = Date.now()
+
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('melody-lead', 'lead', 'mastermind', 'awaiting_user_approval', now, now)
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('melody-v1', 'worker', 'melody-lead', 'done', now, now)
+    sqlite.prepare(`
+      INSERT INTO merge_candidates(
+        id,
+        lead_id,
+        proposed_winner_worker_id,
+        selected_winner_worker_id,
+        target_branch,
+        reviewer_reasoning,
+        selection_source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('melody-lead', 'melody-lead', 'melody-v1', null, 'lane/r1/melody', 'seed proposal', 'proposal_accept')
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+    const melodySection = res.body.sections.find((s: any) => s.id === 'melody')
+
+    expect(res.status).toBe(200)
+    expect(melodySection).toMatchObject({
+      awaitingUserApproval: true,
+      selectionStatus: 'waiting_for_user',
+    })
+    expect(melodySection.workers[0]).toMatchObject({
+      id: 'melody-v1',
+      isProposed: true,
+      canBeSelected: true,
     })
   })
 
@@ -290,5 +420,27 @@ describe('routes', () => {
     const melodyAfterSelection = resAfterSelection.body.sections.find((s: any) => s.id === 'melody')
 
     expect(melodyAfterSelection.workers[0].contextAvailable).toBe(true)
+  })
+
+  it('GET /api/orchestration prefers the newest run worktree for run-level state', async () => {
+    const db = createTestDb()
+    const sqlite = getSQLite(db)
+    const now = Date.now()
+
+    sqlite.prepare(`INSERT INTO tasks (id, type, parent_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run('mastermind', 'mastermind', null, 'review_ready', now, now)
+    upsertWorktree(db, 'run-r1', 'run-r1', '/tmp/run-r1', 'run/r1', 'main')
+    upsertWorktree(db, 'run-r2', 'run-r2', '/tmp/run-r2', 'run/r2', 'main')
+    sqlite.prepare(`
+      INSERT INTO previews(worker_id, mode, preview_url, generated_code, source_files, context_winner_ids, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('run:r2:final', 'solo', 'https://strudel.cc/#r2', 'stack(sound("hh"))', '["src/index.js"]', '[]', now)
+
+    const app = createApp({ db, leadQueues: new Map() })
+    const res = await request(app).get('/api/orchestration')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runId).toBe('r2')
+    expect(res.body.fullSongPreviewUrl).toBe('https://strudel.cc/#r2')
   })
 })

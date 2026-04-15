@@ -162,7 +162,12 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
 
 export async function launchRunPreview(db: Db, runId: string, worktreePath: string) {
   const sourcePath = path.join(worktreePath, 'src/index.js')
-  const generatedCode = await fs.readFile(sourcePath, 'utf8')
+  let generatedCode: string
+  try {
+    generatedCode = await fs.readFile(sourcePath, 'utf8')
+  } catch {
+    throw new Error('final preview unavailable: missing src/index.js')
+  }
   const previewUrl = await generateRunPreviewUrl(worktreePath, `run/${runId}`)
   const generatedAt = Date.now()
   persistPreviewArtifact(
