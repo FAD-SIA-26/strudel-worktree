@@ -2,6 +2,10 @@ node_modules/
 .next/
 dist/
 .turbo/
+.worktrees/
+.orc/
+apps/api/.worktrees/
+apps/api/.orc/
 *.db
 *.db-journal
 .env
