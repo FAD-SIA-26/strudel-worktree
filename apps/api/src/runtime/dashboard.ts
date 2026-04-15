@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import { createRequire } from "node:module";
 import * as net from "node:net";
 import * as path from "node:path";
 
@@ -8,7 +9,7 @@ interface DashboardOptions {
   apiPort: number;
   dashboardPort: number;
   stateDir: string;
-  webRoot: string;
+  webRoot?: string;
 }
 
 export interface DashboardHandle {
@@ -156,6 +157,13 @@ function waitForDashboardUrl(
 async function startDashboardServer(
   opts: DashboardOptions,
 ): Promise<DashboardHandle> {
+  if (
+    !opts.webRoot ||
+    !fs.existsSync(path.join(opts.webRoot, "package.json"))
+  ) {
+    return { process: null, url: "", stop: () => {} };
+  }
+
   const preferredDashboardUrl = `http://127.0.0.1:${opts.dashboardPort}`;
 
   if (await isPortOpen(opts.dashboardPort)) {
@@ -165,14 +173,16 @@ async function startDashboardServer(
   fs.mkdirSync(opts.stateDir, { recursive: true });
   const logPath = path.join(opts.stateDir, "dashboard.log");
   const logStream = fs.createWriteStream(logPath, { flags: "a" });
-  const nextBin = path.join(
-    opts.webRoot,
-    "node_modules",
-    "next",
-    "dist",
-    "bin",
-    "next",
-  );
+  const require = createRequire(import.meta.url);
+  let nextBin: string;
+  try {
+    nextBin = require.resolve("next/dist/bin/next", {
+      paths: [opts.webRoot],
+    });
+  } catch {
+    logStream.end();
+    return { process: null, url: "", stop: () => {} };
+  }
   let output = "";
 
   const proc = spawn(

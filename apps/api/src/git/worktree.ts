@@ -205,6 +205,7 @@ export function findRepoRootSync(startDir: string): string {
   return execFileSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: startDir,
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
 

@@ -1,8 +1,11 @@
 node_modules/
 .next/
 dist/
+.artifacts/
 .turbo/
 *.db
 *.db-journal
 .env
 .env.local
+.worktrees/
+.orc/

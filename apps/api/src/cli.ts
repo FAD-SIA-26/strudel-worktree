@@ -23,7 +23,11 @@ import { createLLMClientFromEnv } from "./orchestrator/llm";
 import { MastermindStateMachine } from "./orchestrator/mastermind";
 import { Watchdog } from "./orchestrator/watchdog";
 import { ensureDashboardServer } from "./runtime/dashboard";
-import { getOrcAppRoots, getOrcPaths } from "./runtime/paths";
+import {
+  getOrcAppRoots,
+  getOrcPaths,
+  resolveOrcAssetPath,
+} from "./runtime/paths";
 import { createApp } from "./server/app";
 import { attachWebSocket } from "./server/wsHandler";
 
@@ -56,7 +60,11 @@ function selectDefaultTemplatePath(goal: string): string | undefined {
     )
   )
     return undefined;
-  return path.resolve(API_ROOT, "../../templates/strudel-track.toml");
+  return resolveOrcAssetPath(
+    import.meta.url,
+    "templates",
+    "strudel-track.toml",
+  );
 }
 
 function registerCleanup(cleanup: () => void): () => void {
@@ -135,7 +143,9 @@ program
     });
 
     console.log(
-      `[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${PORT}`,
+      dashboard.url
+        ? `[orc] dashboard → ${dashboard.url}  |  api → http://localhost:${PORT}`
+        : `[orc] api → http://localhost:${PORT}  |  dashboard disabled in packaged install`,
     );
 
     const watchdog = new Watchdog({
