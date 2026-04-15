@@ -2,6 +2,8 @@
 
 This note describes the current shipped behavior for ORC's lane review flow and dashboard preview UX.
 
+Companion diagram: `docs/superpowers/guides/2026-04-15-reviewer-selection-schema.md`
+
 ## Core Winner Selection Flow
 
 - The reviewer only suggests a winner. It does not finalize one automatically.
