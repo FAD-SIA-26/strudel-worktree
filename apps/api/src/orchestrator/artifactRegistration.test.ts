@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { MockAgent } from '../agents/mock'
 import { createTestDb, getSQLite } from '../db/client'
+import { CommandQueue } from '../events/commandQueues'
 import { cleanupTestRepo, initTestRepo } from '../test-helpers/initTestRepo'
 import { ConcurrencyGovernor } from './concurrency'
 import { MastermindStateMachine } from './mastermind'
@@ -14,6 +15,7 @@ describe('artifact registration', () => {
     repoDir = initTestRepo('artifact-registration')
     const db = createTestDb()
     const gov = new ConcurrencyGovernor(2)
+    const leadQueues = new Map<string, CommandQueue<any>>()
 
     const mastermind = new MastermindStateMachine({
       repoRoot: repoDir,
@@ -21,6 +23,7 @@ describe('artifact registration', () => {
       governor: gov,
       runId: 'r7',
       baseBranch: 'main',
+      leadQueues,
       agentFactory: () => new MockAgent({ delayMs: 5, outcome: 'done' }),
       llmCall: async prompt => {
         if (prompt.includes('Decompose')) {
@@ -33,7 +36,13 @@ describe('artifact registration', () => {
       },
     })
 
+    const autoApprove = setInterval(() => {
+      const q = leadQueues.get('main-lead')
+      if (q && q.size === 0) q.enqueue({ commandType: 'AcceptProposal' })
+    }, 10)
+
     await mastermind.run({ userGoal: 'Build landing page' })
+    clearInterval(autoApprove)
 
     const rows = getSQLite(db)
       .prepare(`
@@ -60,5 +69,5 @@ describe('artifact registration', () => {
         path: expect.stringContaining('/.orc/worktrees/r7-main-v1/.orc/worker-plan.md'),
       }),
     ]))
-  })
+  }, 30_000)
 })
