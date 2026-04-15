@@ -88,48 +88,112 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Codex CLI
-        run: npm install --global @openai/codex@0.120.0
-
-      - name: Login to Codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: printenv OPENAI_API_KEY | codex login --with-api-key
-
-      - name: Configure GitHub MCP
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: codex mcp add github --url https://api.githubcopilot.com/mcp/ --bearer-token-env-var GITHUB_TOKEN
-
-      - name: Fetch pull request base
-        run: git fetch origin ${{ github.base_ref }}
+      - name: Pre-fetch base and head refs
+        run: |
+          git fetch --no-tags origin \
+            ${{ github.event.pull_request.base.ref }} \
+            +refs/pull/${{ github.event.pull_request.number }}/head
 
       - name: Run Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: .github/codex/prompts/review.md
+          output-file: codex-output.md
+          safety-strategy: drop-sudo
+          sandbox: workspace-write
+
+      - name: Sync PR review into description and comment
+        if: steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@v7
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          cat <<EOF > /tmp/codex-pr-review.md
-          $(cat agents/reviewer.md)
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const review = (process.env.CODEX_FINAL_MESSAGE ?? "").trim();
+            if (!review) {
+              core.setFailed("Missing Codex final message");
+              return;
+            }
 
-          Pull request context:
-          - Repository: ${{ github.repository }}
-          - Pull request number: ${{ github.event.pull_request.number }}
-          - Base branch: origin/${{ github.base_ref }}
-          - Head branch: ${{ github.head_ref }}
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
 
-          Use GitHub MCP to:
-          1. Read the current pull request title and description.
-          2. Review the checked out branch against origin/${{ github.base_ref }} by inspecting the git diff from origin/${{ github.base_ref }}...HEAD.
-          3. Post exactly one review comment on pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-          EOF
+            const startMarker = "<!-- codex-review:start -->";
+            const endMarker = "<!-- codex-review:end -->";
+            const commentMarker = "<!-- codex-review-comment -->";
 
-          codex -a never -s workspace-write exec - < /tmp/codex-pr-review.md
+            const escapeRegExp = (value) =>
+              value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+            const upsertManagedBlock = (body, blockStart, blockEnd, content) => {
+              const trimmedBody = (body ?? "").trim();
+              const block = `${blockStart}\n${content}\n${blockEnd}`;
+              const pattern = new RegExp(
+                `${escapeRegExp(blockStart)}[\\s\\S]*?${escapeRegExp(blockEnd)}`,
+                "m",
+              );
+
+              if (!trimmedBody) return block;
+              if (pattern.test(trimmedBody)) {
+                return trimmedBody.replace(pattern, block).trim();
+              }
+              return `${trimmedBody}\n\n${block}`;
+            };
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number,
+            });
+
+            const updatedBody = upsertManagedBlock(
+              pull.body,
+              startMarker,
+              endMarker,
+              review,
+            );
+
+            await github.rest.pulls.update({
+              owner,
+              repo,
+              pull_number,
+              body: updatedBody,
+            });
+
+            const commentBody = `${commentMarker}\n${review}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: pull_number,
+              per_page: 100,
+            });
+
+            const existingComment = comments.find(
+              (comment) =>
+                typeof comment.body === "string" &&
+                comment.body.includes(commentMarker),
+            );
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pull_number,
+                body: commentBody,
+              });
+            }
