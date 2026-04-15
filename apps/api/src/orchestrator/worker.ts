@@ -24,6 +24,8 @@ interface WorkerConfig {
   agentFactory: () => WorkerAgent
   leadPlanPath?: string
   runPlanPath?:  string
+  domainSkillName?: string
+  domainSkillContent?: string
 }
 
 export class WorkerStateMachine {
@@ -107,6 +109,8 @@ export class WorkerStateMachine {
       planPath,
       leadPlanPath: this.cfg.leadPlanPath ?? '',
       runPlanPath:  this.cfg.runPlanPath  ?? '',
+      domainSkillName: this.cfg.domainSkillName,
+      domainSkillContent: this.cfg.domainSkillContent,
       onHeartbeat:  heartbeat => this.recordHeartbeat(heartbeat),
       onSessionLogOpened: sessionPath => upsertArtifact(this.cfg.db, this.cfg.id, 'session_log', sessionPath),
     })

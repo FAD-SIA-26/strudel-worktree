@@ -29,6 +29,8 @@ interface MastermindConfig {
   doMerge?:    (targetWorktreePath: string, sourceBranch: string) => Promise<{ success: boolean; conflictFiles: string[] }>
   templatePath?: string
   maxConcurrentWorkers?: number
+  domainSkillName?: string
+  domainSkillContent?: string
 }
 
 export type MastermindState =
@@ -159,6 +161,8 @@ export class MastermindStateMachine {
             repoRoot: this.cfg.repoRoot, db: this.cfg.db, governor: this.cfg.governor,
             agentFactory: this.cfg.agentFactory, llmCall: this.cfg.llmCall,
             commandQueue: leadCommandQueue, runPlanPath,
+            domainSkillName: this.cfg.domainSkillName,
+            domainSkillContent: this.cfg.domainSkillContent,
           })
           return lead.run()
             .then(result => ({ section, result }))

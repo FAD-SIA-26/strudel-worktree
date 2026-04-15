@@ -26,6 +26,7 @@ import { ensureDashboardServer } from './runtime/dashboard'
 import { getOrcAppRoots, getOrcPaths } from './runtime/paths'
 import { findAvailablePort } from './runtime/ports'
 import { waitForShutdownSignal } from './runtime/reviewReady'
+import { resolveDomainSkill, resolveTemplateSelection } from './orchestrator/domainSkill'
 
 function resolveRepoRoot(): string {
   if (process.env.ORC_REPO_ROOT) return process.env.ORC_REPO_ROOT
@@ -44,11 +45,6 @@ const ORC_PATHS = getOrcPaths(REPO_ROOT)
 const DB_PATH = process.env.ORC_DB_PATH ?? ORC_PATHS.dbPath
 const PORT    = parseInt(process.env.ORC_PORT ?? '4000')
 const DASHBOARD_PORT = parseInt(process.env.ORC_DASHBOARD_PORT ?? '3000')
-
-function selectDefaultTemplatePath(goal: string): string | undefined {
-  if (!/\b(track|song|beat|melody|chords|bass|drums|strudel|arrangement)\b/i.test(goal)) return undefined
-  return path.resolve(API_ROOT, '../../templates/strudel-track.toml')
-}
 
 function registerCleanup(cleanup: () => void): () => void {
   const handler = () => {
@@ -70,6 +66,8 @@ program
   .option('-m, --max-workers <n>', 'max concurrent workers', '4')
   .option('--mock', 'use MockAgent (deterministic, no real Codex)')
   .option('--run-id <id>', 'custom run ID', `run-${Date.now()}`)
+  .option('--skill <name>', 'worker domain skill (for example: strudel)')
+  .option('--template <name>', 'explicit template name (without .toml extension)')
   .action(async (goal: string, opts) => {
     // orc requires a git repo — branches and worktrees are how it isolates parallel work
     try {
@@ -92,7 +90,13 @@ program
     const startingBranch = getCurrentBranchSync(REPO_ROOT)
     const startingHead = getHeadShaSync(REPO_ROOT)
     const baseBranch = startingBranch ?? startingHead
-    const templatePath = selectDefaultTemplatePath(goal)
+    const domainSkill = await resolveDomainSkill(REPO_ROOT, opts.skill)
+    const templatePath = await resolveTemplateSelection({
+      repoRoot: REPO_ROOT,
+      userGoal: goal,
+      explicitTemplateName: opts.template,
+      skillName: opts.skill,
+    })
 
     await fs.mkdir(ORC_PATHS.stateDir, { recursive: true })
 
@@ -150,9 +154,14 @@ program
         : createLLMClientFromEnv(),
       leadQueues:          leadQs,
       templatePath,
+      domainSkillName:      domainSkill?.name,
+      domainSkillContent:   domainSkill?.content,
       maxConcurrentWorkers: parseInt(opts.maxWorkers),
     })
 
+    if (domainSkill) {
+      console.log(`[orc] using worker skill ${domainSkill.name}`)
+    }
     if (templatePath) {
       console.log(`[orc] using template ${path.basename(templatePath)}`)
     }

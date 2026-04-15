@@ -32,6 +32,8 @@ interface LeadConfig {
   commandQueue: CommandQueue<OrcCommand>
   runPlanPath?: string
   maxRetries?:  number
+  domainSkillName?: string
+  domainSkillContent?: string
 }
 
 export class LeadStateMachine {
@@ -166,6 +168,8 @@ export class LeadStateMachine {
       agentFactory: this.cfg.agentFactory,
       leadPlanPath,
       runPlanPath:  this.cfg.runPlanPath,
+      domainSkillName: this.cfg.domainSkillName,
+      domainSkillContent: this.cfg.domainSkillContent,
     }))
 
     const workerPromises = workers.map((w, i) =>

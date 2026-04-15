@@ -19,6 +19,14 @@ export class CodexCLIAdapter implements WorkerAgent {
     const sessionPath = path.join(ctx.worktreePath, '.orc', '.orc-session.jsonl')
     const session = await fs.open(sessionPath, 'a')
     await ctx.onSessionLogOpened?.(sessionPath)
+    const domainSkillBlock = ctx.domainSkillContent?.trim()
+      ? [
+          '',
+          `Domain skill: ${ctx.domainSkillName ?? 'custom'}`,
+          ctx.domainSkillContent.trim(),
+        ]
+      : []
+
     const prompt = [
       'You are an ORC worker subagent running unattended inside a git worktree.',
       'Execute the assigned implementation task directly.',
@@ -37,6 +45,7 @@ export class CodexCLIAdapter implements WorkerAgent {
       `Your plan: ${ctx.planPath}`,
       `Lead plan: ${ctx.leadPlanPath}`,
       `Run plan: ${ctx.runPlanPath}`,
+      ...domainSkillBlock,
     ].join('\n')
 
     return new Promise<WorkerResult>(resolve => {

@@ -8,6 +8,8 @@ export interface WorkerContext {
   planPath: string
   leadPlanPath: string
   runPlanPath: string
+  domainSkillName?: string
+  domainSkillContent?: string
   onHeartbeat?: (heartbeat: WorkerHeartbeat) => void | Promise<void>
   onSessionLogOpened?: (sessionPath: string) => void | Promise<void>
 }
