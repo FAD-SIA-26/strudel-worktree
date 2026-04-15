@@ -1,8 +1,8 @@
 # templates/strudel-track.toml
 [template]
 name = "strudel-track"
-version = "1.1"
-description = "Lo-fi / electronic track — one lead per instrument lane"
+version = "2.0"
+description = "Cyberpunk / cinematic hip-hop track — recreate a reference arrangement"
 
 [[sections]]
 id = "drums"
@@ -10,45 +10,140 @@ label = "Drums"
 depends_on = []
 workers = 2
 prompt_hint = """
-Write a Strudel.js drum pattern. Output to src/drums.js ONLY.
-Export a single named const: export const drums = <pattern>
-Keep it minimal, loopable, lo-fi. Tempo: {tempo}bpm.
+Recreate this drum pattern in Strudel.js for a cyberpunk cinematic hip-hop track.
+
+Reference:
+  setcpm(90 / 4)
+  const kick  = s("bd!4:6").duckorbit(2).duckattack(.25)
+  const snare = s("- sd:4 - sd:4")
+  const hihat = s("hh!8:1").orbit(2).gain(.5)
+  $DRUMS: stack(kick, snare, hihat)._scope()
+
+Rules:
+- Output ONLY to src/drums.js
+- Export a single named const: export const drums = <pattern>
+- Use setcpm(90 / 4) at the top of the file
+- Reproduce or closely vary the kick/snare/hihat pattern above
+- Keep the duckorbit duck on kick, orbit(2) on hihat
+- Style: tight, punchy cyberpunk beat, 90 BPM, 4/4
+
 Do NOT touch any other file.
 """
 
 [[sections]]
-id = "bass"
-label = "Bass"
+id = "synth"
+label = "Bass Synth"
 depends_on = []
 workers = 2
 prompt_hint = """
-Write a Strudel.js bass line. Output to src/bass.js ONLY.
-Export: export const bass = <pattern>
-Key: {key}, Tempo: {tempo}bpm.
+Recreate this bass synth line in Strudel.js for a cyberpunk cinematic hip-hop track.
+
+Reference:
+  setcpm(90 / 4)
+  $SYNTH: note("f2 d2!6 d#2!3 d2!5 d1")
+    .s("supersaw")
+    .orbit(2)
+    ._pianoroll()
+
+Rules:
+- Output ONLY to src/synth.js
+- Export a single named const: export const synth = <pattern>
+- Use setcpm(90 / 4) at the top of the file
+- Reproduce or closely vary the bass note sequence above (D minor / Bb context)
+- Keep the supersaw sound, orbit(2)
+- Style: dark, driving cyberpunk bass, 90 BPM, key of D minor
+
 Do NOT touch any other file.
 """
 
 [[sections]]
 id = "chords"
-label = "Harmony / Chords"
+label = "Chords"
 depends_on = []
 workers = 2
 prompt_hint = """
-Write a Strudel.js chord pattern. Output to src/chords.js ONLY.
-Export: export const chords = <pattern>
-Key: {key}, Tempo: {tempo}bpm.
+Recreate these chord stabs in Strudel.js for a cyberpunk cinematic hip-hop track.
+
+Reference:
+  setcpm(90 / 4)
+  $CHORDS: note("<[a#3,a#4] [g3,g4] [d3,d4]@2>")
+    .s("gm_synth_brass_2")
+    .orbit(2)
+    .trans(-12)
+    .room(.8)
+    .rsize(4)
+    ._pianoroll()
+
+Rules:
+- Output ONLY to src/chords.js
+- Export a single named const: export const chords = <pattern>
+- Use setcpm(90 / 4) at the top of the file
+- Reproduce or closely vary the Bb-G-D chord progression
+- Keep gm_synth_brass_2 sound, trans(-12), room and rsize
+- Style: cinematic brass stabs, 90 BPM, key of D minor / Bb
+
 Do NOT touch any other file.
 """
 
 [[sections]]
-id = "melody"
+id = "lead"
 label = "Lead Melody"
 depends_on = []
-workers = 3
+workers = 2
 prompt_hint = """
-Write a Strudel.js lead melody. Output to src/melody.js ONLY.
-Export: export const melody = <pattern>
-Key: {key}, Tempo: {tempo}bpm.
+Recreate this lead melody in Strudel.js for a cyberpunk cinematic hip-hop track.
+
+Reference:
+  setcpm(90 / 4)
+  $LEAD: note("<d4@0.75 f4@0.25 e4@0.5 a#4@0.25 a4@0.25 -@2>")
+    .orbit(2)
+    .s("gm_lead_8_bass_lead")
+    .gain(.6)
+    .room(.8)
+    .rsize(6)
+    ._pianoroll()
+
+Rules:
+- Output ONLY to src/lead.js
+- Export a single named const: export const lead = <pattern>
+- Use setcpm(90 / 4) at the top of the file
+- Reproduce or closely vary the melodic phrase above (D4-F4-E4-Bb4-A4 contour)
+- Keep gm_lead_8_bass_lead sound, gain .6, room, rsize
+- Style: expressive cinematic lead, 90 BPM, D minor
+
+Do NOT touch any other file.
+"""
+
+[[sections]]
+id = "arp"
+label = "Arpeggio"
+depends_on = []
+workers = 2
+prompt_hint = """
+Recreate this arpeggio in Strudel.js for a cyberpunk cinematic hip-hop track.
+
+Reference:
+  setcpm(90 / 4)
+  $ARP: note("<[d5 a5 a#5 d6]*4 [[d5 a5 a#5 f6] [d5 a5 a#5 e6]]*2>")
+    .trans(-12)
+    .s("sawtooth")
+    .orbit(2)
+    .distort(0.5)
+    .lpenv(perlin.slow(3).range(1, 5))
+    .lpf(perlin.slow(2).range(100, 3000))
+    .gain(0.3)
+    .room(.8)
+    .rsize(6)
+    ._pianoroll()
+
+Rules:
+- Output ONLY to src/arp.js
+- Export a single named const: export const arp = <pattern>
+- Use setcpm(90 / 4) at the top of the file
+- Reproduce or closely vary the fast D-A-Bb arpeggio pattern
+- Keep sawtooth, distort(0.5), perlin-modulated lpf sweep, trans(-12)
+- Style: glitchy cyberpunk arp, 90 BPM, D minor
+
 Do NOT touch any other file.
 """
 
@@ -58,13 +153,20 @@ label = "Final Arrangement"
 depends_on = []
 workers = 1
 prompt_hint = """
-Write src/index.js that imports and stacks all instruments.
-import { drums }  from './drums.js'
-import { bass }   from './bass.js'
-import { chords } from './chords.js'
-import { melody } from './melody.js'
-Stack them with stack() and set overall volume/effects for a lo-fi sound.
-Do NOT rewrite the instrument files — only src/index.js.
+Write src/index.js that stacks all instrument lanes into the final cyberpunk track.
+
+Target sound: cyberpunk cinematic hip-hop at 90 BPM, key of D minor.
+Reference artist: Farhan Beats (Epic Orchestral Hip Hop).
+
+Import all lanes and stack them:
+  import { drums  } from './drums.js'
+  import { synth  } from './synth.js'
+  import { chords } from './chords.js'
+  import { lead   } from './lead.js'
+  import { arp    } from './arp.js'
+
+Stack with stack() and apply any global effects (reverb, compression, gain balance).
+Output ONLY to src/index.js. Do NOT rewrite any instrument file.
 """
 
 [params]

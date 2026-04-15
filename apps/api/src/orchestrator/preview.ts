@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getSQLite, type Db } from '../db/client'
-import { getAllTasks, getMergeCandidates, getTaskEdges, getWorktrees } from '../db/queries'
+import { getAllTasks, getMergeCandidates, getWorktrees } from '../db/queries'
 import { composeContextualPreview, composeLanePreview } from './previewComposer'
 
 export type PreviewMode = 'solo' | 'contextual'
@@ -116,19 +116,14 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
     throw new Error(`lead not found for worker ${workerId}`)
   }
 
-  const taskEdges = getTaskEdges(db)
-  const upstreamLeadIds = taskEdges
-    .filter(edge => edge.edgeType === 'depends_on' && edge.childId === leadId)
-    .map(edge => edge.parentId)
-
   const mergeCandidates = getMergeCandidates(db)
-  const winnerIds = upstreamLeadIds.map(depLeadId => {
-    const winner = mergeCandidates.find(c => c.leadId === depLeadId)?.selectedWinnerWorkerId
-    if (!winner) {
-      throw new Error(`context unavailable for ${workerId}: missing winner for ${depLeadId}`)
-    }
-    return winner
-  })
+  const winnerIds = mergeCandidates
+    .filter(c => c.leadId !== leadId && c.selectedWinnerWorkerId != null)
+    .map(c => c.selectedWinnerWorkerId as string)
+
+  if (winnerIds.length === 0) {
+    throw new Error(`context unavailable for ${workerId}: no approved winners from other sections`)
+  }
 
   const worktrees = getWorktrees(db)
   const upstreamEntries = await Promise.all(winnerIds.map(async winnerWorkerId => {
@@ -161,23 +156,50 @@ export async function launchPreview(db: Db, workerId: string, worktreePath: stri
 }
 
 export async function launchRunPreview(db: Db, runId: string, worktreePath: string) {
-  const sourcePath = path.join(worktreePath, 'src/index.js')
-  let generatedCode: string
-  try {
-    generatedCode = await fs.readFile(sourcePath, 'utf8')
-  } catch {
-    throw new Error('final preview unavailable: missing src/index.js')
+  // Collect all approved winners across all sections and compose them into a
+  // single self-contained Strudel snippet. This avoids ES module import issues
+  // that arise when src/index.js uses `import { x } from './x.js'` syntax.
+  const mergeCandidates = getMergeCandidates(db)
+  const worktrees = getWorktrees(db)
+
+  const winnerEntries = await Promise.all(
+    mergeCandidates
+      .filter(c => c.selectedWinnerWorkerId != null)
+      .map(async c => {
+        const winnerWorkerId = c.selectedWinnerWorkerId as string
+        const wt = worktrees.find(x => x.workerId === winnerWorkerId)
+        if (!wt) return null
+        const laneName = sectionIdForWorker(winnerWorkerId)
+        // Skip arrangement lane — it writes index.js which we compose ourselves
+        if (laneName === 'arrangement') return null
+        const filePath = await codeFileForWorker(wt.path, winnerWorkerId)
+        let source: string
+        try {
+          source = await fs.readFile(path.join(wt.path, filePath), 'utf8')
+        } catch {
+          return null
+        }
+        return { laneName, workerId: winnerWorkerId, filePath, source }
+      })
+  )
+
+  const validEntries = winnerEntries.filter((e): e is NonNullable<typeof e> => e !== null)
+
+  if (validEntries.length === 0) {
+    throw new Error('final preview unavailable: no approved winners with source files')
   }
-  const previewUrl = await generateRunPreviewUrl(worktreePath, `run/${runId}`)
+
+  const draft = composeContextualPreview({ laneEntries: validEntries })
+  const previewUrl = encodePreviewUrl(draft.generatedCode)
   const generatedAt = Date.now()
   persistPreviewArtifact(
     db,
     `run:${runId}:final`,
     'solo',
     previewUrl,
-    generatedCode,
-    ['src/index.js'],
-    [],
+    draft.generatedCode,
+    draft.sourceFiles,
+    draft.contextWinnerIds,
     generatedAt,
   )
   return { workerId: `run:${runId}:final`, mode: 'solo' as const, previewUrl, generatedAt }
