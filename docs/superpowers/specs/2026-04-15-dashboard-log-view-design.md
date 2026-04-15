@@ -111,6 +111,12 @@ Required artifact types:
 - `worker_plan`
 - `session_log`
 
+Artifact upsert timing:
+- `createRunPlan()` upserts `run_plan` immediately after writing `.orc/runs/<runId>/run-plan.md`
+- `createLeadPlan()` upserts `lead_plan` immediately after writing `.orc/runs/<runId>/leads/<sectionId>.md`
+- `createWorkerPlan()` upserts `worker_plan` immediately after writing `<worktree>/.orc/worker-plan.md`
+- worker session initialization in `CodexCLIAdapter` upserts `session_log` as soon as `<worktree>/.orc/.orc-session.jsonl` is opened for append
+
 Plan creation and worker session initialization should upsert these artifact rows when files are created.
 
 This gives the API a stable path registry and removes path guessing from the client.
@@ -120,6 +126,16 @@ This gives the API a stable path registry and removes path guessing from the cli
 ## 4. Backend Architecture
 
 The lightweight orchestration tree returned by `GET /api/orchestration` should stay lightweight. Entity detail content should move to dedicated APIs.
+
+### 4.0 Entity ID convention
+
+`GET /api/entities/:entityId/...` uses the current `tasks.id` value as the route identifier for both workers and leads.
+
+That means:
+- worker `entityId` is the same identifier currently used in the dashboard selection state (`selectedId`) and the same value stored as `worktrees.worker_id`
+- lead `entityId` remains the current lead task ID format, `<sectionId>-lead`
+
+This slice does not introduce a second public alias such as plain `sectionId` for lead detail routes. The response's `entityType` discriminator is for rendering behavior, not for changing route-ID conventions.
 
 ### 4.1 Detail endpoint
 
@@ -154,7 +170,6 @@ type EntityDetail =
         baseBranch?: string
         message?: string
       }
-      previewArtifacts: Array<{ mode: 'solo' | 'contextual'; previewUrl: string }>
     }
   | {
       entityId: string
@@ -188,11 +203,28 @@ Add:
 
 This returns a recent window for initial render and reconnection recovery.
 
+Default behavior:
+- default window: last `500` entries
+- maximum supported `limit`: `1000`
+- response order: oldest-first
+- the client appends streamed entries to the bottom of the list
+
+The response also returns a concrete tail cursor for the live stream.
+
+```ts
+type LogsResponse = {
+  entries: LogEntry[]
+  tailCursor: string | null
+}
+```
+
 ### 4.3 Live log stream endpoint
 
 Add:
 
 `GET /api/entities/:entityId/logs/stream`
+
+The stream accepts `after=<tailCursor>` from the initial logs response. If `after` is omitted, the stream begins at the current live tail boundary and only emits newly observed entries.
 
 Use Server-Sent Events for the first implementation.
 
@@ -219,13 +251,21 @@ type LogEntry = {
 }
 ```
 
+`LogEntry.id` rules:
+- worker log entries use append-only 1-based line numbering from the session file: `${entityId}:line:${lineNumber}`
+- lead log entries use the durable SQLite row ID: `${entityId}:event:${eventLogId}`
+
+`tailCursor` rules:
+- workers use the last emitted session-file line number, encoded as `line:<n>`
+- leads use the last emitted `event_log.id`, encoded as `event:<id>`
+
 Worker normalization rules:
 - JSON lines with `error` become `stderr`
 - JSON lines with `output` that contain Codex JSON payloads become `codex_event`
 - plain output becomes `stdout`
 
 Lead normalization rules:
-- `event_log` rows for that lead become `lead_event`
+- `event_log` rows become `lead_event` only when `entity_id = :entityId AND entity_type = 'lead'`
 - `title` comes from `eventType`
 - `body` is a formatted view of the event payload
 - `raw` contains the original serialized payload
@@ -287,7 +327,12 @@ Behavior:
 - `Plan` renders markdown content inline in a scrollable panel.
 - `Logs` loads an initial tail window, then appends streamed entries in real time.
 - `Diff` renders full diff text inline.
-- `Preview` keeps current preview actions, backed by real detail metadata rather than guessed path strings.
+- `Preview` keeps current preview actions, but preview URLs remain sourced from the orchestration snapshot plus the existing preview-launch route in this slice.
+
+Preview source-of-truth decision for this slice:
+- plan, log, diff, and resolved path content come from `GET /api/entities/:entityId/detail` plus the log endpoints
+- preview URLs remain sourced from `GET /api/orchestration`
+- `GET /api/entities/:entityId/detail` does not duplicate `previewArtifacts`
 
 ### 6.2 Lead tabs
 
@@ -319,7 +364,7 @@ Behavior:
 Worker logs are the real Codex session stream. The UI should not synthesize or summarize away the underlying content.
 
 Required behavior:
-- open with the most recent available entries
+- open with the most recent available window
 - append new entries as the file grows
 - tolerate the log file not existing yet
 - keep raw content visible
@@ -339,9 +384,11 @@ Required behavior:
 
 On refresh or SSE reconnect:
 - the client refetches the initial tail window from `GET /api/entities/:entityId/logs`
-- the stream resumes from that point
+- the response returns `tailCursor`
+- the client opens `GET /api/entities/:entityId/logs/stream?after=<tailCursor>`
+- incoming entries deduplicate by `LogEntry.id`
 
-The first cut does not need durable cursoring beyond a recent replay window.
+The first cut does not need durable cross-session cursor persistence beyond this replay-and-resume flow.
 
 ---
 
