@@ -161,21 +161,27 @@ program
                   dependsOn: [],
                 },
                 {
-                  id: "bass",
-                  goal: "Write bass line in Strudel.js",
+                  id: "synth",
+                  goal: "Write bass synth in Strudel.js",
                   numWorkers: 2,
                   dependsOn: [],
                 },
                 {
                   id: "chords",
-                  goal: "Write chord pattern in Strudel.js",
+                  goal: "Write chord stabs in Strudel.js",
                   numWorkers: 2,
                   dependsOn: [],
                 },
                 {
-                  id: "melody",
+                  id: "lead",
                   goal: "Write lead melody in Strudel.js",
-                  numWorkers: 3,
+                  numWorkers: 2,
+                  dependsOn: [],
+                },
+                {
+                  id: "arp",
+                  goal: "Write arpeggio in Strudel.js",
+                  numWorkers: 2,
                   dependsOn: [],
                 },
                 {
@@ -188,8 +194,8 @@ program
             }
             if (prompt.includes("Generate") || prompt.includes("prompts")) {
               return JSON.stringify([
-                "Write a minimal lo-fi pattern",
-                "Write a rhythmic groove pattern",
+                "Faithful recreation of the reference",
+                "Creative variation on the reference",
               ]);
             }
             const match = prompt.match(/([\w-]+-v1)/);

@@ -56,7 +56,7 @@ describe('Full orchestration (MockAgent)', () => {
     expect(emitted).toContain('WinnerProposed')
     expect(emitted).toContain('WinnerSelected')
     expect(emitted).toContain('OrchestrationComplete')
-    expect(leadDelegatedOrder).toEqual(['drums', 'bass', 'chords', 'melody', 'arrangement'])
+    expect(leadDelegatedOrder).toEqual(['drums', 'synth', 'chords', 'lead', 'arp', 'arrangement'])
     expect(emitted.lastIndexOf('LeadDelegated')).toBeLessThan(emitted.indexOf('LeadDone'))
   }, 60_000)
 })
