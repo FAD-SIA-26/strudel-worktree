@@ -1,17 +1,49 @@
 {
   "name": "worktree-orchestrator",
-  "private": true,
+  "version": "0.1.0",
   "packageManager": "pnpm@9.0.0",
+  "bin": {
+    "orc": "./dist/cli.mjs"
+  },
+  "files": ["dist", "templates", "skills", "README.md"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "turbo run dev --parallel",
-    "build": "turbo run build",
-    "test": "turbo run test",
+    "changeset": "changeset",
+    "dev": "turbo run dev --parallel --filter=!worktree-orchestrator",
+    "build": "turbo run build --filter=!worktree-orchestrator",
+    "build:package": "tsup --config tsup.config.ts",
+    "test": "turbo run test --filter=!worktree-orchestrator",
     "lint": "biome check .",
+    "version-packages": "changeset version",
+    "prepack": "pnpm build:package",
+    "pack:github": "mkdir -p .artifacts && npm pack --pack-destination ./.artifacts",
     "db:generate": "cd apps/api && pnpm drizzle-kit generate",
-    "db:migrate": "cd apps/api && pnpm drizzle-kit migrate"
+    "db:migrate": "cd apps/api && pnpm drizzle-kit migrate",
+    "release:github": "pnpm lint && pnpm test && pnpm build && pnpm build:package && pnpm pack:github"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "commander": "^12.0.0",
+    "cors": "^2.8.5",
+    "drizzle-orm": "^0.36.0",
+    "express": "^4.21.0",
+    "toml": "^3.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
+    "@changesets/cli": "^2.29.7",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/cors": "^2.8.0",
+    "@types/express": "^4.17.0",
+    "@types/ws": "^8.5.0",
+    "drizzle-kit": "^0.27.0",
+    "supertest": "^7.2.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.0.0",
     "turbo": "^2.0.0",
     "typescript": "^5.5.0"
   },
