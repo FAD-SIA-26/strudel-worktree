@@ -49,6 +49,21 @@ export function composeLanePreview({ laneName, source }: LanePreviewInput): Prev
 }
 
 export function composeContextualPreview({ laneEntries }: { laneEntries: ContextLaneEntry[] }): PreviewArtifactDraft {
+  // Check if the last entry is an index.js file (arrangement/final composition)
+  const lastEntry = laneEntries[laneEntries.length - 1]
+  const isArrangementFile = lastEntry?.filePath === 'src/index.js'
+
+  if (isArrangementFile) {
+    // For arrangement files (index.js), they already import and stack everything
+    // Just return the source as-is
+    return {
+      generatedCode: lastEntry!.source,
+      sourceFiles: laneEntries.map(entry => entry.filePath),
+      contextWinnerIds: laneEntries.slice(0, -1).map(entry => entry.workerId),
+    }
+  }
+
+  // For regular lane files, extract consts and compose them
   const consts = laneEntries.map(entry => extractLaneConst(entry.laneName, entry.source))
   const laneNames = laneEntries.map(entry => entry.laneName)
   const sourceFiles = laneEntries.map(entry => entry.filePath)
