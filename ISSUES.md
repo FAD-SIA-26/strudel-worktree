@@ -481,6 +481,142 @@ Enable natural language commands during orchestration:
 
 ## 🟡 Medium Priority (UX & Polish)
 
+### #20 UI/UX Redesign - Minimalistic OpenAI-Inspired Frontend
+**Priority:** P1 - High  
+**Component:** Frontend / UX  
+**Status:** 📋 **PLANNED**  
+**Labels:** `frontend`, `ux`, `design`, `accessibility`
+
+**Problem:**
+- Current UI is functional but developer-focused, not user-friendly
+- No onboarding for newcomers
+- Overwhelming information display (3-panel layout)
+- Technical terminology everywhere (`awaiting_user_approval`, `mastermind`, etc.)
+- Poor empty states and unclear next actions
+- No keyboard shortcuts or bulk actions for power users
+
+**Vision:**
+Transform dashboard into a refined, minimalistic interface inspired by OpenAI ChatGPT/Claude.ai that:
+- Reduces cognitive load for newcomers
+- Guides users through orchestration flow intuitively
+- Feels professional and polished
+- Scales from simple to complex views
+- Delights with smooth interactions
+
+**Proposed Design System:**
+
+**Visual Language:**
+- Clean, minimalistic design (inspired by OpenAI ChatGPT)
+- Refined color palette (less blue, more neutral darks)
+- Better typography hierarchy (Inter font family)
+- Consistent spacing and border radius
+- Subtle animations and transitions
+
+**New Information Architecture:**
+```
+Empty State → Overview (Progress) → Detail (Drill-down)
+```
+
+Instead of current:
+```
+3-Panel: Tree | Detail | Events (all at once)
+```
+
+**Key Improvements:**
+
+1. **Progressive Disclosure:**
+   - Start with overview showing overall progress
+   - Drill down to section details when needed
+   - Hide technical details by default
+
+2. **Better First Experience:**
+   - Welcome screen with "New Orchestration" CTA
+   - Quick start guide modal
+   - Inline help and tooltips
+   - Recent runs list
+
+3. **Clearer Status & Progress:**
+   - Overall progress bar (X/Y sections complete)
+   - Status badges with icons (not just dots)
+   - Timeline view for events (not raw feed)
+   - Toast notifications for important updates
+
+4. **Intuitive Actions:**
+   - Large, clear action buttons
+   - Preview buttons (not tiny `↗` links)
+   - Bulk actions (approve all, reject all)
+   - Confirmation for destructive actions
+
+5. **Power User Features:**
+   - Command palette (Cmd+K)
+   - Keyboard shortcuts
+   - Search and filter
+   - Quick navigation
+
+**Components to Build:**
+- AppShell (layout system)
+- EmptyState, Card, StatusBadge, ProgressBar
+- Button variants (primary, secondary, ghost, danger)
+- SectionCard, WorkerComparison
+- Modal, Toast, ActionMenu
+- CodeViewer, PreviewEmbed, Timeline
+- Command palette
+
+**Implementation Plan:**
+
+**Phase 1: Foundation** (Days 1-3)
+- Design system setup (colors, typography, tokens)
+- Core components (Button, Card, Badge, EmptyState)
+- Layout components (AppShell, Header, Sidebar)
+- Toast notification system
+
+**Phase 2: Dashboard Redesign** (Days 4-6)
+- Empty state landing page
+- Overview view with progress
+- Section detail drill-down
+- Breadcrumb navigation
+
+**Phase 3: Advanced Features** (Days 7-9)
+- Worker comparison side-by-side
+- Real-time toast notifications
+- Timeline/events redesign
+- Code viewer with syntax highlighting
+
+**Phase 4: Polish & Testing** (Days 10-12)
+- Command palette (Cmd+K)
+- Keyboard shortcuts
+- Responsive design (mobile/tablet)
+- Component tests + E2E tests
+- Storybook documentation
+
+**Quick Wins (Can Start Immediately):**
+- Better empty state with welcome message (2h)
+- Status badge redesign (1h)
+- Toast notifications (3h)
+- Bigger preview buttons (1h)
+- Progress bar (2h)
+**Total:** 9 hours for significant UX improvement!
+
+**Migration Strategy:**
+- Feature flag: `?newui=1` parameter
+- Gradual rollout with opt-in beta
+- Keep old UI for 30 days
+- Zero breaking changes to backend
+
+**Success Metrics:**
+- Time to first orchestration < 2min (vs 5min)
+- User error rate < 5%
+- 80% newcomer completion rate
+- NPS score > 40
+- Lighthouse score > 90
+
+**Estimated Effort:** 8-12 days  
+**Detailed Plan:** See `ISSUE_20_UI_REDESIGN_PLAN.md`
+
+**Related Issues:** #10 (Dashboard Testing), #11 (Error Messages)
+
+---
+
 ### #10 Dashboard Needs Testing
 **Priority:** P2 - Medium  
 **Component:** Frontend  
@@ -911,13 +1047,14 @@ After orchestration completes, generate:
 ### Phase 3: Scale & Polish (Month 2-3)
 **Goal:** Multi-user, scalable, polished UX
 
-1. **#7 - Redis event bus** (7 days)
-2. **#12 - Template gallery** (7 days)
-3. **#13 - Skill system** (5 days)
-4. **#14 - Better preview** (6 days)
-5. **#9 - NL steering** (6 days)
+1. **#20 - UI/UX redesign** (10 days) **NEW - HIGH IMPACT**
+2. **#7 - Redis event bus** (7 days)
+3. **#12 - Template gallery** (7 days)
+4. **#13 - Skill system** (5 days)
+5. **#14 - Better preview** (6 days)
+6. **#9 - NL steering** (6 days)
 
-**Total:** ~31 days of work
+**Total:** ~41 days of work
 
 ---
 
