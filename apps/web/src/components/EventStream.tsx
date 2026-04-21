@@ -2,6 +2,7 @@
 import type { OrcEvent } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
 import { orcWs } from "../ws/client";
+import { useToast } from "./ui/Toast";
 
 const EVENT_CFG: Record<
   string,
@@ -61,89 +62,131 @@ export function EventStream() {
   const [events, setEvents] = useState<
     Array<{ key: string; ts: number; type: string; id: string }>
   >([]);
+  const [filter, setFilter] = useState<string>('all');
   const bottom = useRef<HTMLDivElement>(null);
+  const { success, error, info } = useToast();
 
   useEffect(() => {
     const unsub = orcWs.subscribe((e: OrcEvent) => {
-      setEvents((p) => [
-        ...p.slice(-99),
-        {
-          key: `${e.entityId}-${e.eventType}-${e.sequence}-${e.ts}`,
-          ts: e.ts,
-          type: e.eventType,
-          id: e.entityId,
-        },
-      ]);
+      const newEvent = {
+        key: `${e.entityId}-${e.eventType}-${e.sequence}-${e.ts}`,
+        ts: e.ts,
+        type: e.eventType,
+        id: e.entityId,
+      };
+
+      setEvents((p) => [...p.slice(-99), newEvent]);
+
+      // Show toast notifications for important events
+      if (e.eventType === 'WorkerDone') {
+        success(`Worker completed: ${e.entityId.split('-').pop()}`);
+      } else if (e.eventType === 'WorkerFailed') {
+        error(`Worker failed: ${e.entityId}`);
+      } else if (e.eventType === 'OrchestrationComplete') {
+        success('🎉 Orchestration complete!');
+      } else if (e.eventType === 'ReviewComplete') {
+        info('Review ready for approval');
+      }
     });
     return unsub;
-  }, []);
+  }, [success, error, info]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   });
 
+  const filteredEvents = filter === 'all'
+    ? events
+    : events.filter(e => {
+        if (filter === 'worker') return e.type.startsWith('Worker');
+        if (filter === 'lead') return e.type.startsWith('Lead');
+        if (filter === 'system') return e.type === 'OrchestrationComplete' || e.type === 'ReviewComplete';
+        return true;
+      });
+
   return (
-    <div className="p-2 overflow-x-hidden">
-      <div className="px-2 pt-2 pb-2.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.15em]">
+    <div className="flex flex-col h-full bg-[var(--surface-hover)]">
+      {/* Header with filter */}
+      <div className="px-3 py-3 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
             Events
           </span>
           {events.length > 0 && (
-            <span className="text-[9px] text-gray-700 font-mono">
-              {events.length}
+            <span className="text-xs text-[var(--text-tertiary)] font-mono">
+              {filteredEvents.length}/{events.length}
             </span>
           )}
         </div>
-      </div>
 
-      {events.length === 0 && (
-        <div className="px-2 py-4 text-[10px] text-gray-700 text-center italic">
-          Waiting for events…
-        </div>
-      )}
-
-      <div className="space-y-0.5">
-        {events.map((e) => {
-          const cfg = EVENT_CFG[e.type] ?? {
-            bg: "",
-            dot: "bg-gray-500",
-            label: "text-gray-500",
-            short: e.type.slice(0, 4).toUpperCase(),
-          };
-          return (
-            <div
-              key={e.key}
-              className={`px-2 py-1.5 rounded space-y-0.5 ${cfg.bg}`}
+        {/* Filter buttons */}
+        <div className="flex gap-1">
+          {['all', 'worker', 'lead', 'system'].map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-2 py-1 text-xs rounded transition-colors ${
+                filter === f
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'bg-[var(--surface)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+              }`}
             >
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`}
-                />
-                <span
-                  className={`text-[9px] font-bold tracking-wide flex-shrink-0 ${cfg.label}`}
-                >
-                  {cfg.short}
-                </span>
-                <span className="text-[9px] text-gray-700 ml-auto flex-shrink-0 font-mono">
-                  {new Date(e.ts).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit",
-                  })}
-                </span>
-              </div>
-              <div
-                className="font-mono text-[9px] text-gray-500 truncate pl-3"
-                title={e.id}
-              >
-                {e.id}
-              </div>
-            </div>
-          );
-        })}
+              {f}
+            </button>
+          ))}
+        </div>
       </div>
-      <div ref={bottom} />
+
+      {/* Events list */}
+      <div className="flex-1 overflow-y-auto p-2">
+        {filteredEvents.length === 0 && (
+          <div className="px-2 py-6 text-sm text-[var(--text-tertiary)] text-center italic">
+            {events.length === 0 ? 'Waiting for events…' : 'No events match filter'}
+          </div>
+        )}
+
+        <div className="space-y-1">
+          {filteredEvents.map((e) => {
+            const cfg = EVENT_CFG[e.type] ?? {
+              bg: "bg-[var(--surface)]",
+              dot: "bg-gray-500",
+              label: "text-gray-500",
+              short: e.type.slice(0, 4).toUpperCase(),
+            };
+            return (
+              <div
+                key={e.key}
+                className={`px-2.5 py-2 rounded-lg space-y-1 ${cfg.bg} border border-transparent hover:border-[var(--border)] transition-all animate-slide-in`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot}`}
+                  />
+                  <span
+                    className={`text-xs font-bold tracking-wide flex-shrink-0 ${cfg.label}`}
+                  >
+                    {cfg.short}
+                  </span>
+                  <span className="text-xs text-[var(--text-tertiary)] ml-auto flex-shrink-0 font-mono">
+                    {new Date(e.ts).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                </div>
+                <div
+                  className="font-mono text-xs text-[var(--text-secondary)] truncate pl-4"
+                  title={e.id}
+                >
+                  {e.id}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div ref={bottom} />
+      </div>
     </div>
   );
 }

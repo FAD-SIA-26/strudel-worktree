@@ -8,6 +8,7 @@ import { useEntityDetail } from '../hooks/useEntityDetail'
 import { useEntityLogs } from '../hooks/useEntityLogs'
 import { Button } from './ui/Button'
 import { StatusBadge } from './ui/StatusBadge'
+import { WorkerComparison } from './WorkerComparison'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 const API_UNAVAILABLE_MESSAGE = 'Unable to reach the ORC API. Start or resume ORC and try again.'
@@ -94,6 +95,7 @@ export function DetailPanel({ selectedId, sections }: {
   )
   const [pendingWinnerId, setPendingWinnerId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [showComparison, setShowComparison] = useState(false)
 
   useEffect(() => {
     setTab(isLead ? 'compare' : 'plan')
@@ -272,12 +274,24 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
         {tab === 'compare' && isLead && section && (
-          <div className="max-w-2xl space-y-2">
-            <p className="text-[11px] text-gray-600 mb-4">
-              Review each worker&apos;s output. Launch previews, then explicitly pick the lane winner.
-            </p>
+          <>
+            <div className="max-w-2xl space-y-2">
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-sm text-[var(--text-secondary)]">
+                  Review each worker&apos;s output. Launch previews, then explicitly pick the lane winner.
+                </p>
+                {section.workers.filter(w => w.state === 'done').length >= 2 && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setShowComparison(true)}
+                  >
+                    Compare Side-by-Side
+                  </Button>
+                )}
+              </div>
 
-            {section.awaitingUserApproval && proposedWorker && leadId && (
+              {section.awaitingUserApproval && proposedWorker && leadId && (
               <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 p-4 mb-4">
                 <div className="text-[11px] text-amber-200">
                   Mastermind suggests <span className="font-mono">{proposedWorker.id}</span> for this lane. You can
@@ -423,11 +437,12 @@ export function DetailPanel({ selectedId, sections }: {
               )
             })}
             {section.workers.length === 0 && (
-              <div className="py-8 text-[11px] text-gray-700 text-center italic">
+              <div className="py-8 text-sm text-[var(--text-tertiary)] text-center italic">
                 No workers assigned yet
               </div>
             )}
-          </div>
+            </div>
+          </>
         )}
 
         {tab === 'plan' && detail && (
@@ -510,6 +525,15 @@ export function DetailPanel({ selectedId, sections }: {
           </div>
         )}
       </div>
+
+      {/* Worker Comparison Modal */}
+      {showComparison && section && leadId && (
+        <WorkerComparison
+          workers={section.workers}
+          onSelectWinner={(workerId) => pickWinner(workerId, leadId)}
+          onClose={() => setShowComparison(false)}
+        />
+      )}
     </div>
   )
 }
