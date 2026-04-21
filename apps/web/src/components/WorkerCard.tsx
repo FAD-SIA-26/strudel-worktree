@@ -1,14 +1,17 @@
 'use client'
 import type { WorkerInfo } from '@orc/types'
+import { StatusBadge, type WorkerState } from './ui/StatusBadge'
 
-const STATE_CFG: Record<string, { dot: string; text: string }> = {
-  queued:   { dot: 'bg-gray-500',                      text: 'text-gray-500' },
-  spawning: { dot: 'bg-blue-400 animate-pulse',        text: 'text-blue-400' },
-  running:  { dot: 'bg-blue-400 animate-pulse',        text: 'text-blue-400' },
-  stalled:  { dot: 'bg-amber-400',                     text: 'text-amber-400' },
-  zombie:   { dot: 'bg-red-500',                       text: 'text-red-400' },
-  done:     { dot: 'bg-emerald-400',                   text: 'text-emerald-400' },
-  failed:   { dot: 'bg-red-500',                       text: 'text-red-400' },
+const STATE_MAP: Record<string, WorkerState> = {
+  queued: 'queued',
+  spawning: 'spawning',
+  running: 'running',
+  stalled: 'stalled',
+  zombie: 'zombie',
+  stopping: 'stopping',
+  stop_failed: 'stop_failed',
+  done: 'complete',
+  failed: 'failed',
 }
 
 export function WorkerCard({ worker, selected, onSelect }: {
@@ -16,28 +19,33 @@ export function WorkerCard({ worker, selected, onSelect }: {
   selected: boolean
   onSelect: (id: string) => void
 }) {
-  const cfg = STATE_CFG[worker.state] ?? { dot: 'bg-gray-500', text: 'text-gray-500' }
+  const mappedState = STATE_MAP[worker.state] || 'queued'
   const soloPreview = worker.previewArtifacts.find(p => p.mode === 'solo')
+
   return (
     <button
       onClick={() => onSelect(worker.id)}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded w-full text-left min-w-0 transition-colors ${
+      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg w-full text-left min-w-0 transition-colors ${
         selected
-          ? 'bg-[#192030] ring-1 ring-blue-500/40'
-          : 'hover:bg-[#111825]'
+          ? 'bg-[var(--surface)] ring-2 ring-[var(--info)]'
+          : 'hover:bg-[var(--surface-hover)]'
       }`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
-      <span className="font-mono text-[11px] text-gray-300 truncate flex-1 min-w-0">{worker.id}</span>
+      <StatusBadge status={mappedState} size="sm" showLabel={false} />
+      <span className="font-mono text-sm text-[var(--text-primary)] truncate flex-1 min-w-0">
+        {worker.id}
+      </span>
       {soloPreview && (
         <a
           href={soloPreview.previewUrl}
           target="_blank"
           rel="noreferrer"
           onClick={e => e.stopPropagation()}
-          className="ml-auto text-[9px] text-blue-500 hover:text-blue-400 flex-shrink-0 transition-colors"
+          className="ml-auto text-xs text-[var(--info-text)] hover:text-[var(--info)] flex-shrink-0 transition-colors"
           title="Open solo preview"
-        >↗</a>
+        >
+          ↗
+        </a>
       )}
     </button>
   )

@@ -6,6 +6,8 @@ import { launchWorkerPreview } from '../lib/previewActions'
 import { getProposedWorker, getSelectedWorker } from '../lib/reviewState'
 import { useEntityDetail } from '../hooks/useEntityDetail'
 import { useEntityLogs } from '../hooks/useEntityLogs'
+import { Button } from './ui/Button'
+import { StatusBadge } from './ui/StatusBadge'
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'
 const API_UNAVAILABLE_MESSAGE = 'Unable to reach the ORC API. Start or resume ORC and try again.'
@@ -100,13 +102,13 @@ export function DetailPanel({ selectedId, sections }: {
 
   if (!selectedId) {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8 select-none">
-        <div className="w-12 h-12 rounded-2xl bg-[#0f1420] border border-[#1c2738] flex items-center justify-center">
-          <span className="text-gray-700 text-xl">◈</span>
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-center px-8 select-none">
+        <div className="w-16 h-16 rounded-2xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center">
+          <span className="text-[var(--text-tertiary)] text-3xl">◈</span>
         </div>
         <div>
-          <p className="text-sm text-gray-500 font-medium">Nothing selected</p>
-          <p className="text-[11px] text-gray-700 mt-1">
+          <p className="text-base text-[var(--text-secondary)] font-semibold">Nothing selected</p>
+          <p className="text-sm text-[var(--text-tertiary)] mt-2">
             Choose a section lead or worker from the tree
           </p>
         </div>
@@ -212,37 +214,36 @@ export function DetailPanel({ selectedId, sections }: {
           )}
         </div>
 
-        <div className="flex gap-1.5 flex-shrink-0">
+        <div className="flex gap-2 flex-shrink-0">
           {worker?.canBeSelected && canChooseWinner && leadId && (
-            <button
+            <Button
+              variant="success"
+              size="sm"
               onClick={() => pickWinner(worker.id, leadId)}
-              className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
             >
-              ✓ Choose this winner
-            </button>
+              ✓ Choose Winner
+            </Button>
           )}
-          <button
-            onClick={drop}
-            className="text-[11px] bg-red-500/8 hover:bg-red-500/18 text-red-400 px-2.5 py-1 rounded border border-red-500/20 transition-colors"
-          >
+          <Button variant="danger" size="sm" onClick={drop}>
             ✕ Drop
-          </button>
+          </Button>
           {headerSoloPreview ? (
             <a
               href={headerSoloPreview.previewUrl}
               target="_blank"
               rel="noreferrer"
-              className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25 transition-colors"
+              className="inline-flex items-center justify-center gap-2 h-8 px-3 text-xs rounded-md font-medium transition-all bg-[var(--info-bg)] text-[var(--info-text)] hover:bg-[var(--info)] border border-[var(--info)]"
             >
               ↗ Preview
             </a>
           ) : worker ? (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => launchWorkerPreview(qc, worker.id, 'solo')}
-              className="text-[11px] bg-[#111825] hover:bg-[#192030] text-blue-400 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
             >
               ▶ Launch
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
@@ -283,18 +284,20 @@ export function DetailPanel({ selectedId, sections }: {
                   accept it or choose another completed worker.
                 </div>
                 <div className="flex gap-2 mt-3">
-                  <button
+                  <Button
+                    variant="success"
+                    size="sm"
                     onClick={() => approveProposal(leadId)}
-                    className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25"
                   >
-                    Accept suggestion
-                  </button>
-                  <button
+                    ✓ Accept Suggestion
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => launchWorkerPreview(qc, proposedWorker.id, 'solo')}
-                    className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25"
                   >
-                    Open preview
-                  </button>
+                    ▶ Open Preview
+                  </Button>
                 </div>
               </div>
             )}
@@ -366,57 +369,53 @@ export function DetailPanel({ selectedId, sections }: {
                           href={soloPreview.previewUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-[11px] bg-violet-500/12 hover:bg-violet-500/22 text-violet-400 px-2.5 py-1 rounded border border-violet-500/25 transition-colors"
+                          className="inline-flex items-center justify-center gap-2 h-8 px-3 text-xs rounded-md font-medium transition-all bg-violet-500/12 text-violet-400 hover:bg-violet-500/22 border border-violet-500/25"
                         >
                           ↗ Solo
                         </a>
                       ) : (
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => launchWorkerPreview(qc, w.id, 'solo')}
-                          className="text-[11px] bg-violet-500/8 hover:bg-violet-500/18 text-violet-400 px-2.5 py-1 rounded border border-violet-500/20 transition-colors"
                         >
-                          ▶ Launch solo
-                        </button>
+                          ▶ Solo
+                        </Button>
                       )}
                       {contextualPreview ? (
                         <a
                           href={contextualPreview.previewUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-2.5 py-1 rounded border border-blue-500/25 transition-colors"
+                          className="inline-flex items-center justify-center gap-2 h-8 px-3 text-xs rounded-md font-medium transition-all bg-[var(--info-bg)] text-[var(--info-text)] hover:bg-[var(--info)] border border-[var(--info)]"
                         >
                           ↗ Context
                         </a>
                       ) : (
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => launchWorkerPreview(qc, w.id, 'contextual')}
-                          className="text-[11px] bg-blue-500/8 hover:bg-blue-500/18 text-blue-400 px-2.5 py-1 rounded border border-blue-500/20 transition-colors disabled:opacity-40"
                           disabled={!w.contextAvailable}
                         >
-                          ▶ Launch with context
-                        </button>
+                          ▶ Context
+                        </Button>
                       )}
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => launchWorkerPreview(qc, w.id, 'solo')}
-                        className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
                       >
-                        ↻ Refresh solo
-                      </button>
-                      {contextualPreview && (
-                        <button
-                          onClick={() => launchWorkerPreview(qc, w.id, 'contextual')}
-                          className="text-[11px] bg-[#111825] hover:bg-[#192030] text-gray-300 px-2.5 py-1 rounded border border-[#1c2738] transition-colors"
-                        >
-                          ↻ Refresh context
-                        </button>
-                      )}
+                        ↻ Refresh
+                      </Button>
                       {w.canBeSelected && canChooseWinner && leadId && (
-                        <button
+                        <Button
+                          variant="success"
+                          size="sm"
                           onClick={() => pickWinner(w.id, leadId)}
-                          className="text-[11px] bg-emerald-500/12 hover:bg-emerald-500/22 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/25 transition-colors"
                         >
-                          ✓ Choose this winner
-                        </button>
+                          ✓ Winner
+                        </Button>
                       )}
                     </div>
                   )}
@@ -495,16 +494,17 @@ export function DetailPanel({ selectedId, sections }: {
                 </a>
               </div>
             ) : worker ? (
-              <div className="bg-[#0f1420] border border-[#1c2738] rounded-lg p-4 space-y-3">
-                <p className="text-[11px] text-gray-600">
-                  No preview available yet. <span className="text-blue-400">▶ Launch</span> to start one.
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-5 space-y-4">
+                <p className="text-sm text-[var(--text-secondary)]">
+                  No preview available yet. Launch to start one.
                 </p>
-                <button
+                <Button
+                  variant="primary"
+                  size="md"
                   onClick={() => launchWorkerPreview(qc, worker.id, 'solo')}
-                  className="text-[11px] bg-blue-500/12 hover:bg-blue-500/22 text-blue-400 px-3 py-2 rounded border border-blue-500/25 transition-colors"
                 >
                   ▶ Launch Solo Preview
-                </button>
+                </Button>
               </div>
             ) : null}
           </div>

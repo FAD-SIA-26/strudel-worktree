@@ -2,18 +2,20 @@
 import { useState } from 'react'
 import type { OrchState } from '@orc/types'
 import { WorkerCard } from './WorkerCard'
+import { StatusBadge, type MastermindState } from './ui/StatusBadge'
 
-const LEAD_BADGE: Record<string, string> = {
-  idle:      'text-gray-500  bg-gray-500/10  border-gray-500/20',
-  planning:  'text-violet-400 bg-violet-500/10 border-violet-500/20',
-  running:   'text-blue-400   bg-blue-500/10   border-blue-500/20',
-  reviewing: 'text-amber-400  bg-amber-500/10  border-amber-500/20',
-  awaiting_user_approval: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
-  merging:   'text-orange-400 bg-orange-500/10 border-orange-500/20',
-  merging_lane: 'text-orange-300 bg-orange-500/10 border-orange-500/20',
-  done:      'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-  review_ready: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20',
-  failed:    'text-red-400    bg-red-500/10    border-red-500/20',
+const STATE_MAP: Record<string, MastermindState> = {
+  idle: 'idle',
+  planning: 'planning',
+  running: 'running',
+  reviewing: 'reviewing',
+  awaiting_user_approval: 'awaiting_user_approval',
+  merging: 'merging',
+  merging_lane: 'merging_lane',
+  merging_lanes: 'merging_lanes',
+  done: 'complete',
+  review_ready: 'complete',
+  failed: 'failed',
 }
 
 export function TreePanel({ state, selected, onSelect }: {
@@ -28,22 +30,24 @@ export function TreePanel({ state, selected, onSelect }: {
     return n
   })
 
+  const mastermindState = STATE_MAP[state?.mastermindState ?? 'idle'] || 'idle'
+
   return (
-    <div className="p-2 space-y-0.5">
+    <div className="p-3 space-y-2">
       {/* Panel label */}
-      <div className="px-2 pt-2 pb-2.5">
-        <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-[0.15em]">Hierarchy</span>
+      <div className="px-2 pt-1 pb-2">
+        <span className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+          Hierarchy
+        </span>
       </div>
 
       {/* Mastermind */}
-      <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-indigo-500/8 border border-indigo-500/20 mb-2">
-        <span className="text-indigo-500 text-[10px] flex-shrink-0">◆</span>
-        <span className="text-indigo-300 font-semibold text-[11px]">mastermind</span>
-        <span className={`ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded border ${
-          LEAD_BADGE[state?.mastermindState ?? 'idle'] ?? LEAD_BADGE.idle
-        }`}>
-          {state?.mastermindState ?? 'idle'}
+      <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] mb-3">
+        <span className="text-[var(--accent)] text-sm flex-shrink-0">◆</span>
+        <span className="text-[var(--text-primary)] font-semibold text-sm flex-1">
+          mastermind
         </span>
+        <StatusBadge status={mastermindState} size="sm" showLabel={false} />
       </div>
 
       {/* Sections */}
@@ -51,31 +55,29 @@ export function TreePanel({ state, selected, onSelect }: {
         const isOpen = open.has(s.id)
         const leadId = `${s.id}-lead`
         const isSelected = selected === leadId
+        const sectionState = STATE_MAP[s.state] || 'idle'
+
         return (
           <div key={s.id}>
             <button
               onClick={() => { toggle(s.id); onSelect(leadId) }}
-              className={`flex items-center gap-2 px-2 py-1.5 rounded w-full text-left min-w-0 transition-colors ${
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg w-full text-left min-w-0 transition-colors ${
                 isSelected
-                  ? 'bg-[#1f2a1a] ring-1 ring-yellow-500/30'
-                  : 'hover:bg-[#111825]'
+                  ? 'bg-[var(--surface)] ring-2 ring-[var(--accent)]'
+                  : 'hover:bg-[var(--surface-hover)]'
               }`}
             >
-              <span className="text-gray-600 text-[9px] flex-shrink-0 w-3">
+              <span className="text-[var(--text-tertiary)] text-xs flex-shrink-0 w-3">
                 {isOpen ? '▾' : '▸'}
               </span>
-              <span className="text-yellow-300/90 font-mono text-[11px] truncate flex-1 min-w-0">
+              <span className="text-[var(--text-primary)] font-mono text-sm truncate flex-1 min-w-0">
                 {s.id}
               </span>
-              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ${
-                LEAD_BADGE[s.state] ?? LEAD_BADGE.idle
-              }`}>
-                {s.state}
-              </span>
+              <StatusBadge status={sectionState} size="sm" showLabel={false} />
             </button>
 
             {isOpen && (
-              <div className="ml-3 mt-0.5 mb-1 border-l border-[#1c2738] pl-1.5 space-y-0.5">
+              <div className="ml-4 mt-1 mb-2 border-l-2 border-[var(--border)] pl-2 space-y-1">
                 {s.workers.map(w => (
                   <WorkerCard
                     key={w.id}
@@ -85,7 +87,9 @@ export function TreePanel({ state, selected, onSelect }: {
                   />
                 ))}
                 {s.workers.length === 0 && (
-                  <div className="px-3 py-2 text-[10px] text-gray-700 italic">No workers yet</div>
+                  <div className="px-3 py-3 text-xs text-[var(--text-tertiary)] italic">
+                    No workers yet
+                  </div>
                 )}
               </div>
             )}
@@ -94,7 +98,7 @@ export function TreePanel({ state, selected, onSelect }: {
       })}
 
       {!state?.sections?.length && (
-        <div className="px-3 py-6 text-[11px] text-gray-700 text-center">
+        <div className="px-3 py-8 text-sm text-[var(--text-tertiary)] text-center">
           Awaiting sections…
         </div>
       )}

@@ -1,7 +1,7 @@
 'use client'
 import { ReactNode } from 'react'
 
-type StatusType =
+export type MastermindState =
   | 'idle'
   | 'planning'
   | 'running'
@@ -10,13 +10,21 @@ type StatusType =
   | 'merging'
   | 'merging_lane'
   | 'merging_lanes'
-  | 'done'
-  | 'review_ready'
+  | 'complete'
   | 'failed'
+
+export type WorkerState =
   | 'queued'
   | 'spawning'
+  | 'running'
   | 'stalled'
   | 'zombie'
+  | 'stopping'
+  | 'stop_failed'
+  | 'complete'
+  | 'failed'
+
+type StatusType = MastermindState | WorkerState
 
 interface StatusConfig {
   label: string
@@ -205,7 +213,7 @@ const statusConfig: Record<StatusType, StatusConfig> = {
     ),
     animated: true,
   },
-  done: {
+  complete: {
     label: 'Complete',
     color: 'text-emerald-400',
     bgColor: 'bg-emerald-500/10',
@@ -226,11 +234,11 @@ const statusConfig: Record<StatusType, StatusConfig> = {
       </svg>
     ),
   },
-  review_ready: {
-    label: 'Ready for Review',
-    color: 'text-emerald-400',
-    bgColor: 'bg-emerald-500/10',
-    borderColor: 'border-emerald-500/20',
+  stopping: {
+    label: 'Stopping',
+    color: 'text-amber-400',
+    bgColor: 'bg-amber-500/10',
+    borderColor: 'border-amber-500/20',
     icon: (
       <svg
         className="w-3 h-3"
@@ -242,7 +250,35 @@ const statusConfig: Record<StatusType, StatusConfig> = {
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth={2}
-          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+          d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+        />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
+        />
+      </svg>
+    ),
+    animated: true,
+  },
+  stop_failed: {
+    label: 'Stop Failed',
+    color: 'text-red-400',
+    bgColor: 'bg-red-500/10',
+    borderColor: 'border-red-500/20',
+    icon: (
+      <svg
+        className="w-3 h-3"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
         />
       </svg>
     ),
