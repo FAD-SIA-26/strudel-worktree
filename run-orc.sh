@@ -53,12 +53,6 @@ else
         exit 1
     fi
 
-    # Mask the key for display (show first 7 and last 4 chars)
-    KEY_PREFIX="${OPENAI_API_KEY:0:10}"
-    KEY_SUFFIX="${OPENAI_API_KEY: -4}"
-    MASKED_KEY="${KEY_PREFIX}...${KEY_SUFFIX}"
-    echo -e "${GREEN}✓ OPENAI_API_KEY loaded: ${MASKED_KEY}${NC}\n"
-
     # Run the orchestrator with all arguments
     exec node apps/api/bin/orc.cjs "$@"
 fi
