@@ -98,7 +98,15 @@ function persistPreviewArtifact(
 export async function launchPreview(db: Db, workerId: string, worktreePath: string, mode: PreviewMode) {
   const laneName = sectionIdForWorker(workerId)
   const codeFile = await codeFileForWorker(worktreePath, workerId)
-  const source = await fs.readFile(path.join(worktreePath, codeFile), 'utf8')
+
+  // Fallback: generate placeholder if file doesn't exist (Issue #1 defense-in-depth)
+  let source: string
+  try {
+    source = await fs.readFile(path.join(worktreePath, codeFile), 'utf8')
+  } catch (error) {
+    // File doesn't exist - generate placeholder
+    source = `// Placeholder: ${codeFile} not yet written by worker\n// Worker ID: ${workerId}\nsetcpm(90 / 4);\n\nexport const ${laneName} = s("bd sd").fast(2);`
+  }
 
   if (mode === 'solo') {
     const draft = codeFile === 'src/index.js'
