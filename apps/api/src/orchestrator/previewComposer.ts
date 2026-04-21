@@ -17,15 +17,25 @@ export interface ContextLaneEntry {
 }
 
 function extractLaneConst(laneName: string, source: string): string {
-  const exportLines = [...source.matchAll(/^export\s+const\s+/gm)]
-  if (exportLines.length !== 1) {
+  // Extract only the export const lines (not setcpm, imports, etc.)
+  const exportConstRegex = /^export\s+const\s+([A-Za-z0-9_]+)/gm
+  const exportMatches = [...source.matchAll(exportConstRegex)]
+
+  if (exportMatches.length === 0) {
+    throw new Error(`no export const found in source for lane ${laneName}`)
+  }
+  if (exportMatches.length > 1) {
     throw new Error('multiple named exports are not supported in phase 1 previews')
   }
-  const matches = [...source.matchAll(/export\s+const\s+([A-Za-z0-9_]+)\s*=\s*([\s\S]*?)(?:;\s*|\n?$)/g)]
+
+  // Extract the full export statement
+  const matches = [...source.matchAll(/export\s+const\s+([A-Za-z0-9_]+)\s*=\s*([\s\S]*?)(?:;\s*$|$)/gm)]
   const [, exportedName, expr] = matches[0]!
+
   if (exportedName !== laneName) {
-    throw new Error(`expected export const ${laneName}`)
+    throw new Error(`expected export const ${laneName}, got ${exportedName}`)
   }
+
   return `const ${laneName} = ${expr.trim()}\n`
 }
 
