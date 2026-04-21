@@ -65,10 +65,31 @@ export async function resolveTemplateSelection(opts: {
   skillName?: string
 }): Promise<string | undefined> {
   if (opts.explicitTemplateName) {
-    return findReadablePath(
-      path.join(opts.repoRoot, 'templates', `${opts.explicitTemplateName}.toml`),
-      resolveOrcAssetPath(import.meta.url, 'templates', `${opts.explicitTemplateName}.toml`),
-    )
+    // Check if user provided a full path (contains / or \) or has .toml extension
+    const isFullPath = opts.explicitTemplateName.includes('/') || opts.explicitTemplateName.includes('\\')
+    const hasExtension = opts.explicitTemplateName.endsWith('.toml')
+
+    if (isFullPath && hasExtension) {
+      // User provided full path like "templates/strudel-track.toml"
+      const fullPath = path.resolve(opts.repoRoot, opts.explicitTemplateName)
+      return findReadablePath(
+        fullPath,
+        resolveOrcAssetPath(import.meta.url, opts.explicitTemplateName),
+      )
+    } else if (hasExtension) {
+      // User provided filename with extension like "strudel-track.toml"
+      const templateName = opts.explicitTemplateName.replace(/\.toml$/, '')
+      return findReadablePath(
+        path.join(opts.repoRoot, 'templates', `${templateName}.toml`),
+        resolveOrcAssetPath(import.meta.url, 'templates', `${templateName}.toml`),
+      )
+    } else {
+      // User provided just the name like "strudel-track"
+      return findReadablePath(
+        path.join(opts.repoRoot, 'templates', `${opts.explicitTemplateName}.toml`),
+        resolveOrcAssetPath(import.meta.url, 'templates', `${opts.explicitTemplateName}.toml`),
+      )
+    }
   }
 
   const skill = await resolveDomainSkill(opts.repoRoot, opts.skillName)
