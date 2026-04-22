@@ -62,9 +62,29 @@ export function EventStream() {
   const [events, setEvents] = useState<
     Array<{ key: string; ts: number; type: string; id: string }>
   >([]);
-  const [filter, setFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [sectionFilter, setSectionFilter] = useState<string>('all');
   const bottom = useRef<HTMLDivElement>(null);
   const { success, error, info } = useToast();
+
+  // Auto-discover sections from event entity IDs
+  const discoveredSections = Array.from(
+    new Set(
+      events
+        .map(e => {
+          // Extract section from entityId like "fresh-123-arp-v1" or "run-123-synth-lead"
+          // Pattern: <runId>-<section>-<variant> or <runId>-<section>-lead
+          const parts = e.id.split('-');
+          if (parts.length < 3) return null;
+
+          // Skip run prefix and timestamp, get section part
+          // Find the section name (before -v1, -v2, -lead, etc.)
+          const sectionMatch = e.id.match(/-([a-z]+)(?:-v\d+|-lead|-r\d+|$)/);
+          return sectionMatch?.[1] || null;
+        })
+        .filter((s): s is string => s !== null)
+    )
+  ).sort();
 
   useEffect(() => {
     const unsub = orcWs.subscribe((e: OrcEvent) => {
@@ -95,20 +115,33 @@ export function EventStream() {
     bottom.current?.scrollIntoView({ behavior: "smooth" });
   });
 
-  const filteredEvents = filter === 'all'
-    ? events
-    : events.filter(e => {
-        if (filter === 'worker') return e.type.startsWith('Worker');
-        if (filter === 'lead') return e.type.startsWith('Lead');
-        if (filter === 'system') return e.type === 'OrchestrationComplete' || e.type === 'ReviewComplete';
-        return true;
-      });
+  // Apply both filters
+  const filteredEvents = events.filter(e => {
+    // Type filter
+    let typeMatch = true;
+    if (typeFilter === 'workers') {
+      typeMatch = e.type.startsWith('Worker');
+    } else if (typeFilter === 'coordinators') {
+      typeMatch = e.type.startsWith('Lead');
+    } else if (typeFilter === 'system') {
+      typeMatch = e.type === 'OrchestrationComplete' || e.type === 'ReviewComplete';
+    }
+
+    // Section filter
+    let sectionMatch = true;
+    if (sectionFilter !== 'all') {
+      // Check if entityId contains the section name
+      sectionMatch = e.id.includes(`-${sectionFilter}-`);
+    }
+
+    return typeMatch && sectionMatch;
+  });
 
   return (
     <div className="flex flex-col h-full bg-[var(--surface-hover)]">
-      {/* Header with filter */}
-      <div className="px-3 py-3 border-b border-[var(--border)]">
-        <div className="flex items-center justify-between mb-2">
+      {/* Header with two-tier filters */}
+      <div className="px-3 py-3 border-b border-[var(--border)] space-y-3">
+        <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
             Events
           </span>
@@ -119,22 +152,61 @@ export function EventStream() {
           )}
         </div>
 
-        {/* Filter buttons */}
-        <div className="flex gap-1">
-          {['all', 'worker', 'lead', 'system'].map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-2 py-1 text-xs rounded transition-colors ${
-                filter === f
-                  ? 'bg-[var(--accent)] text-white'
-                  : 'bg-[var(--surface)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
-              }`}
-            >
-              {f}
-            </button>
-          ))}
+        {/* Event Type Filter */}
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider block mb-1">
+            Event Type
+          </label>
+          <div className="flex gap-1 flex-wrap">
+            {['all', 'workers', 'coordinators', 'system'].map((f) => (
+              <button
+                key={f}
+                onClick={() => setTypeFilter(f)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  typeFilter === f
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--surface)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </div>
+
+        {/* Section Filter (only show if we have discovered sections) */}
+        {discoveredSections.length > 0 && (
+          <div>
+            <label className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider block mb-1">
+              Section
+            </label>
+            <div className="flex gap-1 flex-wrap">
+              <button
+                onClick={() => setSectionFilter('all')}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  sectionFilter === 'all'
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--surface)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                }`}
+              >
+                all
+              </button>
+              {discoveredSections.map((section) => (
+                <button
+                  key={section}
+                  onClick={() => setSectionFilter(section)}
+                  className={`px-2 py-1 text-xs rounded transition-colors font-mono ${
+                    sectionFilter === section
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--surface)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {section}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Events list */}
